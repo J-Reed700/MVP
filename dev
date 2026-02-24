@@ -1,0 +1,550 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_DIR="$ROOT_DIR/backend"
+FRONTEND_DIR="$ROOT_DIR/frontend"
+DEV_DIR="$ROOT_DIR/.dev"
+BACKEND_PID_FILE="$DEV_DIR/backend.pid"
+FRONTEND_PID_FILE="$DEV_DIR/frontend.pid"
+BACKEND_PORT_FILE="$DEV_DIR/backend.port"
+FRONTEND_PORT_FILE="$DEV_DIR/frontend.port"
+LLM_SETTINGS_FILE="$DEV_DIR/llm-settings.json"
+COMPOSE_PROFILE="integration-mocks"
+
+mkdir -p "$DEV_DIR"
+
+log() {
+  printf '[dev] %s\n' "$*"
+}
+
+die() {
+  printf '[dev] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+usage() {
+  cat <<'USAGE'
+Usage: ./dev <command> [options]
+
+Commands:
+  run [--minimal]     Start docker services + backend + frontend (attached)
+  up [--minimal]      Start docker services only (detached)
+  down                Stop docker services
+  stop                Stop backend/frontend processes from pid files
+  kill                Stop backend/frontend and docker services
+  clean [--deep]      Remove build artifacts; --deep also removes node_modules
+  build               Build + test backend and build frontend
+  rebuild [--deep]    Recreate docker services, clean, then build everything
+  reset               Stop everything and remove docker volumes + local artifacts
+  status              Show app process status + docker compose status
+  logs                Tail docker compose logs
+  help                Show this help
+
+Examples:
+  ./dev run
+  ./dev run --minimal
+  ./dev rebuild --deep
+  ./dev reset
+USAGE
+}
+
+load_env() {
+  set -a
+  [[ -f "$ROOT_DIR/.env" ]] && source "$ROOT_DIR/.env"
+  [[ -f "$BACKEND_DIR/.env" ]] && source "$BACKEND_DIR/.env"
+  set +a
+}
+
+database_name_from_url() {
+  local url="${DATABASE_URL:-}"
+  local without_query db
+
+  if [[ -z "$url" ]]; then
+    echo "signalops"
+    return
+  fi
+
+  without_query="${url%%\?*}"
+  db="${without_query##*/}"
+
+  if [[ -z "$db" ]]; then
+    echo "signalops"
+  else
+    echo "$db"
+  fi
+}
+
+wait_for_postgres() {
+  local retries=60
+
+  for _ in $(seq 1 "$retries"); do
+    if (cd "$ROOT_DIR" && docker compose exec -T postgres pg_isready -U postgres -d postgres >/dev/null 2>&1); then
+      return 0
+    fi
+    sleep 1
+  done
+
+  die "Postgres did not become ready in time."
+}
+
+ensure_postgres_db() {
+  load_env
+  local db_name db_name_lit db_name_ident exists
+  db_name="$(database_name_from_url)"
+  db_name_lit="${db_name//\'/\'\'}"
+  db_name_ident="${db_name//\"/\"\"}"
+
+  exists="$(
+    cd "$ROOT_DIR" && docker compose exec -T postgres \
+      psql -U postgres -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='${db_name_lit}'" \
+      | tr -d '[:space:]'
+  )"
+
+  if [[ "$exists" != "1" ]]; then
+    log "Creating database '$db_name'..."
+    (cd "$ROOT_DIR" && docker compose exec -T postgres \
+      psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${db_name_ident}\";")
+  fi
+}
+
+port_in_use() {
+  local port="$1"
+
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return
+  fi
+
+  if command -v nc >/dev/null 2>&1; then
+    nc -z localhost "$port" >/dev/null 2>&1
+    return
+  fi
+
+  return 1
+}
+
+next_free_port() {
+  local port="$1"
+  while port_in_use "$port"; do
+    port=$((port + 1))
+  done
+  echo "$port"
+}
+
+pid_from_file() {
+  local file="$1"
+  [[ -f "$file" ]] || return 1
+  tr -d '[:space:]' < "$file"
+}
+
+pid_running() {
+  local file="$1"
+  local pid
+  pid="$(pid_from_file "$file" || true)"
+  [[ -n "${pid:-}" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+kill_pid_signal() {
+  local pid="$1"
+  local signal="$2"
+
+  if [[ "$signal" == "KILL" ]]; then
+    kill -9 "$pid" 2>/dev/null || true
+  else
+    kill "$pid" 2>/dev/null || true
+  fi
+}
+
+kill_process_tree() {
+  local pid="$1"
+  local signal="${2:-TERM}"
+  local child
+
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    kill_process_tree "$child" "$signal"
+  done
+
+  if kill -0 "$pid" 2>/dev/null; then
+    kill_pid_signal "$pid" "$signal"
+  fi
+}
+
+stop_lingering_dev_processes() {
+  local pid
+  local pids
+  local frontend_port
+  local backend_port
+  local port
+  local cmdline
+
+  pids="$(
+    {
+      pgrep -f "$BACKEND_DIR/target/debug/signalops-backend" 2>/dev/null || true
+      pgrep -f "target/debug/signalops-backend" 2>/dev/null || true
+      pgrep -f "target/debug/signalops" 2>/dev/null || true
+      pgrep -f "signalops-backend" 2>/dev/null || true
+      pgrep -f "$FRONTEND_DIR/node_modules/.bin/vite" 2>/dev/null || true
+      pgrep -f "$FRONTEND_DIR/node_modules/vite/bin/vite.js" 2>/dev/null || true
+      pgrep -f "vite --port" 2>/dev/null || true
+    } | awk 'NF' | sort -u
+  )"
+
+  if [[ -n "$pids" ]]; then
+    log "Stopping lingering MVP dev processes..."
+    for pid in $pids; do
+      [[ "$pid" == "$$" ]] && continue
+      kill_process_tree "$pid" TERM
+    done
+    sleep 0.5
+    for pid in $pids; do
+      [[ "$pid" == "$$" ]] && continue
+      if kill -0 "$pid" 2>/dev/null; then
+        kill_process_tree "$pid" KILL
+      fi
+    done
+  fi
+
+  if command -v lsof >/dev/null 2>&1; then
+    frontend_port="$(pid_from_file "$FRONTEND_PORT_FILE" || true)"
+    backend_port="$(pid_from_file "$BACKEND_PORT_FILE" || true)"
+    for port in "$frontend_port" "$backend_port" "5173" "8080"; do
+      [[ -z "${port:-}" ]] && continue
+      for pid in $(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true); do
+        [[ "$pid" == "$$" ]] && continue
+        cmdline="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+        if [[ "$cmdline" == *"signalops"* || "$cmdline" == *"vite"* || "$cmdline" == *"$ROOT_DIR"* ]]; then
+          kill_process_tree "$pid" TERM
+          sleep 0.1
+          if kill -0 "$pid" 2>/dev/null; then
+            kill_process_tree "$pid" KILL
+          fi
+        fi
+      done
+    done
+  fi
+}
+
+stop_pid_file() {
+  local file="$1"
+  local name="$2"
+  local pid
+
+  pid="$(pid_from_file "$file" || true)"
+  [[ -z "${pid:-}" ]] && return 0
+
+  if kill -0 "$pid" 2>/dev/null; then
+    log "Stopping $name (pid $pid)..."
+    kill_process_tree "$pid" TERM
+    for _ in $(seq 1 20); do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        break
+      fi
+      sleep 0.2
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      log "$name still running; sending SIGKILL..."
+      kill_process_tree "$pid" KILL
+    fi
+  fi
+
+  rm -f "$file"
+}
+
+start_backend() {
+  local backend_port="${1:-8080}"
+
+  if pid_running "$BACKEND_PID_FILE"; then
+    log "Backend already running (pid $(pid_from_file "$BACKEND_PID_FILE"))."
+    return
+  fi
+
+  need_cmd cargo
+  load_env
+  log "Starting backend..."
+  (
+    cd "$BACKEND_DIR"
+    SIGNALOPS_LLM_SETTINGS_FILE="$LLM_SETTINGS_FILE" PORT="$backend_port" cargo run
+  ) &
+
+  local pid=$!
+  echo "$pid" > "$BACKEND_PID_FILE"
+  echo "$backend_port" > "$BACKEND_PORT_FILE"
+  log "Backend started (pid $pid)."
+}
+
+start_frontend() {
+  local frontend_port="${1:-5173}"
+  local backend_port="${2:-8080}"
+
+  if pid_running "$FRONTEND_PID_FILE"; then
+    log "Frontend already running (pid $(pid_from_file "$FRONTEND_PID_FILE"))."
+    return
+  fi
+
+  need_cmd npm
+  if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
+    log "Installing frontend dependencies..."
+    (cd "$FRONTEND_DIR" && npm install)
+  fi
+  log "Starting frontend..."
+  (
+    cd "$FRONTEND_DIR"
+    VITE_API_BASE_URL="http://localhost:$backend_port" npm run dev -- --port "$frontend_port" --strictPort
+  ) &
+
+  local pid=$!
+  echo "$pid" > "$FRONTEND_PID_FILE"
+  echo "$frontend_port" > "$FRONTEND_PORT_FILE"
+  log "Frontend started (pid $pid)."
+}
+
+start_docker() {
+  local mode="${1:-full}"
+  need_cmd docker
+
+  if [[ "$mode" == "minimal" ]]; then
+    log "Starting postgres only..."
+    (cd "$ROOT_DIR" && docker compose up -d postgres)
+  else
+    log "Starting postgres + integration mocks..."
+    (cd "$ROOT_DIR" && docker compose --profile "$COMPOSE_PROFILE" up -d --remove-orphans)
+  fi
+
+  wait_for_postgres
+  ensure_postgres_db
+}
+
+stop_docker() {
+  need_cmd docker
+  log "Stopping docker services..."
+  (cd "$ROOT_DIR" && docker compose --profile "$COMPOSE_PROFILE" down --remove-orphans)
+}
+
+clean_artifacts() {
+  local deep="${1:-0}"
+
+  log "Cleaning build artifacts..."
+  rm -rf "$BACKEND_DIR/target" "$FRONTEND_DIR/dist"
+
+  if [[ "$deep" == "1" ]]; then
+    log "Removing frontend node_modules..."
+    rm -rf "$FRONTEND_DIR/node_modules"
+  fi
+
+  rm -rf "$DEV_DIR"
+  mkdir -p "$DEV_DIR"
+
+  log "Clean complete."
+}
+
+build_apps() {
+  need_cmd cargo
+  need_cmd npm
+
+  log "Building backend..."
+  (cd "$BACKEND_DIR" && cargo fmt && cargo check && cargo test)
+
+  log "Building frontend..."
+  if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
+    (cd "$FRONTEND_DIR" && npm install)
+  fi
+  (cd "$FRONTEND_DIR" && npm run build)
+
+  log "Build complete."
+}
+
+rebuild_everything() {
+  local deep="${1:-0}"
+
+  need_cmd docker
+  stop_pid_file "$BACKEND_PID_FILE" "backend"
+  stop_pid_file "$FRONTEND_PID_FILE" "frontend"
+  stop_lingering_dev_processes
+  rm -f "$BACKEND_PORT_FILE" "$FRONTEND_PORT_FILE"
+
+  log "Refreshing docker services/images..."
+  (cd "$ROOT_DIR" && docker compose --profile "$COMPOSE_PROFILE" down --remove-orphans || true)
+  (cd "$ROOT_DIR" && docker compose --profile "$COMPOSE_PROFILE" pull)
+  (cd "$ROOT_DIR" && docker compose --profile "$COMPOSE_PROFILE" up -d --force-recreate --remove-orphans)
+
+  clean_artifacts "$deep"
+  build_apps
+
+  log "Rebuild complete."
+}
+
+reset_everything() {
+  need_cmd docker
+
+  stop_pid_file "$BACKEND_PID_FILE" "backend"
+  stop_pid_file "$FRONTEND_PID_FILE" "frontend"
+  stop_lingering_dev_processes
+  rm -f "$BACKEND_PORT_FILE" "$FRONTEND_PORT_FILE"
+
+  log "Removing docker services and volumes..."
+  (cd "$ROOT_DIR" && docker compose --profile "$COMPOSE_PROFILE" down -v --remove-orphans || true)
+
+  clean_artifacts 1
+  log "Reset complete."
+}
+
+run_stack() {
+  local mode="${1:-full}"
+  local requested_backend_port
+  local requested_frontend_port
+  local backend_port
+  local frontend_port
+
+  stop_pid_file "$BACKEND_PID_FILE" "backend"
+  stop_pid_file "$FRONTEND_PID_FILE" "frontend"
+  stop_lingering_dev_processes
+
+  load_env
+  requested_backend_port="${PORT:-8080}"
+  requested_frontend_port="${FRONTEND_PORT:-5173}"
+  backend_port="$(next_free_port "$requested_backend_port")"
+  frontend_port="$(next_free_port "$requested_frontend_port")"
+
+  if [[ "$backend_port" != "$requested_backend_port" ]]; then
+    log "Backend port $requested_backend_port is busy; using $backend_port."
+  fi
+  if [[ "$frontend_port" != "$requested_frontend_port" ]]; then
+    log "Frontend port $requested_frontend_port is busy; using $frontend_port."
+  fi
+
+  start_docker "$mode"
+  start_backend "$backend_port"
+  start_frontend "$frontend_port" "$backend_port"
+
+  local backend_pid
+  local frontend_pid
+  backend_pid="$(pid_from_file "$BACKEND_PID_FILE")"
+  frontend_pid="$(pid_from_file "$FRONTEND_PID_FILE")"
+
+  log "Backend URL: http://localhost:$backend_port"
+  log "Frontend URL: http://localhost:$frontend_port"
+  log "Press Ctrl+C to stop backend/frontend (docker stays up)."
+
+  trap 'stop_pid_file "$BACKEND_PID_FILE" "backend"; stop_pid_file "$FRONTEND_PID_FILE" "frontend"; stop_lingering_dev_processes; rm -f "$BACKEND_PORT_FILE" "$FRONTEND_PORT_FILE"; exit 0' INT TERM
+
+  local status=0
+  while true; do
+    if ! kill -0 "$backend_pid" 2>/dev/null; then
+      set +e
+      wait "$backend_pid"
+      status=$?
+      set -e
+      break
+    fi
+    if ! kill -0 "$frontend_pid" 2>/dev/null; then
+      set +e
+      wait "$frontend_pid"
+      status=$?
+      set -e
+      break
+    fi
+    sleep 1
+  done
+
+  log "A process exited (status $status). Stopping the other..."
+  stop_pid_file "$BACKEND_PID_FILE" "backend"
+  stop_pid_file "$FRONTEND_PID_FILE" "frontend"
+  stop_lingering_dev_processes
+  rm -f "$BACKEND_PORT_FILE" "$FRONTEND_PORT_FILE"
+
+  return "$status"
+}
+
+show_status() {
+  if pid_running "$BACKEND_PID_FILE"; then
+    log "Backend: running (pid $(pid_from_file "$BACKEND_PID_FILE"))"
+  else
+    log "Backend: stopped"
+  fi
+
+  if pid_running "$FRONTEND_PID_FILE"; then
+    log "Frontend: running (pid $(pid_from_file "$FRONTEND_PID_FILE"))"
+  else
+    log "Frontend: stopped"
+  fi
+
+  if command -v docker >/dev/null 2>&1; then
+    echo
+    (cd "$ROOT_DIR" && docker compose --profile "$COMPOSE_PROFILE" ps)
+  fi
+}
+
+cmd="${1:-help}"
+arg1="${2:-}"
+
+case "$cmd" in
+  help|-h|--help)
+    usage
+    ;;
+  run)
+    if [[ "$arg1" == "--minimal" ]]; then
+      run_stack minimal
+    else
+      run_stack full
+    fi
+    ;;
+  up)
+    if [[ "$arg1" == "--minimal" ]]; then
+      start_docker minimal
+    else
+      start_docker full
+    fi
+    ;;
+  down)
+    stop_docker
+    ;;
+  stop)
+    stop_pid_file "$BACKEND_PID_FILE" "backend"
+    stop_pid_file "$FRONTEND_PID_FILE" "frontend"
+    stop_lingering_dev_processes
+    rm -f "$BACKEND_PORT_FILE" "$FRONTEND_PORT_FILE"
+    ;;
+  kill)
+    stop_pid_file "$BACKEND_PID_FILE" "backend"
+    stop_pid_file "$FRONTEND_PID_FILE" "frontend"
+    stop_lingering_dev_processes
+    rm -f "$BACKEND_PORT_FILE" "$FRONTEND_PORT_FILE"
+    stop_docker
+    ;;
+  clean)
+    if [[ "$arg1" == "--deep" ]]; then
+      clean_artifacts 1
+    else
+      clean_artifacts 0
+    fi
+    ;;
+  build)
+    build_apps
+    ;;
+  rebuild)
+    if [[ "$arg1" == "--deep" ]]; then
+      rebuild_everything 1
+    else
+      rebuild_everything 0
+    fi
+    ;;
+  reset)
+    reset_everything
+    ;;
+  status)
+    show_status
+    ;;
+  logs)
+    need_cmd docker
+    (cd "$ROOT_DIR" && docker compose --profile "$COMPOSE_PROFILE" logs -f --tail=200)
+    ;;
+  *)
+    usage
+    die "Unknown command: $cmd"
+    ;;
+esac

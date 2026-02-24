@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: signalops-postgres
+    environment:
+      POSTGRES_DB: signalops
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d signalops"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  jira-mock:
+    image: wiremock/wiremock:3.6.0
+    container_name: signalops-jira-mock
+    profiles:
+      - integration-mocks
+    ports:
+      - "18081:8080"
+    volumes:
+      - ./testdata/jira/wiremock:/home/wiremock
+
+  gong-mock:
+    image: wiremock/wiremock:3.6.0
+    container_name: signalops-gong-mock
+    profiles:
+      - integration-mocks
+    ports:
+      - "18082:8080"
+    volumes:
+      - ./testdata/gong/wiremock:/home/wiremock
+
+volumes:
+  postgres_data:

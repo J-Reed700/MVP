@@ -1,0 +1,13 @@
+.action-queue-panel {
+  min-height: 280px;
+}
+
+.action-queue-panel .filter-scope-note {
+  margin: 0.5rem 0 0;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-size: 0.88rem;
+}
