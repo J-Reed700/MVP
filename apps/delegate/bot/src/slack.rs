@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use tokio::sync::mpsc;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 #[allow(unused_imports)]
@@ -13,6 +15,7 @@ pub struct SlackSocket {
     pub app_token: String,
     pub bot_token: String,
     http: reqwest::Client,
+    user_cache: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl SlackSocket {
@@ -21,20 +24,24 @@ impl SlackSocket {
             app_token,
             bot_token,
             http: reqwest::Client::new(),
+            user_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     /// Open a Socket Mode connection and forward events to the channel.
     /// Reconnects automatically on disconnect.
     pub async fn run(&self, tx: mpsc::Sender<Value>) -> Result<()> {
+        let mut backoff_secs = 1u64;
         loop {
             match self.connect_and_listen(&tx).await {
                 Ok(()) => {
                     info!("Socket Mode connection closed, reconnecting...");
+                    backoff_secs = 1; // Reset on clean disconnect
                 }
                 Err(e) => {
-                    error!("Socket Mode error: {e}, reconnecting in 5s...");
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    error!("Socket Mode error: {e}, reconnecting in {backoff_secs}s...");
+                    tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+                    backoff_secs = (backoff_secs * 2).min(60); // Exponential backoff, max 60s
                 }
             }
         }
@@ -298,5 +305,50 @@ impl SlackSocket {
         }
 
         Ok(())
+    }
+
+    /// Resolve a user ID to a display name. Results are cached.
+    pub async fn get_user_name(&self, user_id: &str) -> String {
+        // Check cache first
+        {
+            let cache = self.user_cache.lock().await;
+            if let Some(name) = cache.get(user_id) {
+                return name.clone();
+            }
+        }
+
+        // Call users.info API
+        let resp = self
+            .http
+            .get("https://slack.com/api/users.info")
+            .header("Authorization", format!("Bearer {}", self.bot_token))
+            .query(&[("user", user_id)])
+            .send()
+            .await;
+
+        let name = match resp {
+            Ok(r) => {
+                let body: Value = r.json().await.unwrap_or_default();
+                if body["ok"].as_bool() == Some(true) {
+                    body["user"]["profile"]["display_name"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| body["user"]["real_name"].as_str())
+                        .unwrap_or(user_id)
+                        .to_string()
+                } else {
+                    user_id.to_string()
+                }
+            }
+            Err(_) => user_id.to_string(),
+        };
+
+        // Cache it
+        {
+            let mut cache = self.user_cache.lock().await;
+            cache.insert(user_id.to_string(), name.clone());
+        }
+
+        name
     }
 }

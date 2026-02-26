@@ -5,6 +5,7 @@ use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
+    pub id: String,
     pub name: String,
     pub arguments: Value,
 }
@@ -17,12 +18,25 @@ pub struct ModelResponse {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub duration_ms: u64,
+    /// The raw assistant message for appending to conversation history
+    pub raw_assistant_message: Value,
 }
 
 #[derive(Debug, Clone)]
 pub struct CompleteOptions {
     pub system: String,
     pub prompt: String,
+    pub model: Option<String>,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f64>,
+    pub tools: Option<Vec<Value>>,
+}
+
+/// Options for multi-turn completion with explicit message history.
+#[derive(Debug, Clone)]
+pub struct ChatOptions {
+    pub system: String,
+    pub messages: Vec<Value>,
     pub model: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f64>,
@@ -56,6 +70,14 @@ impl ModelClient {
         match self {
             Self::Anthropic { api_key } => complete_anthropic(api_key, opts).await,
             Self::OpenAI { api_key } => complete_openai(api_key, opts).await,
+        }
+    }
+
+    /// Multi-turn completion with explicit message history.
+    pub async fn chat(&self, opts: ChatOptions) -> Result<ModelResponse> {
+        match self {
+            Self::Anthropic { api_key } => chat_anthropic(api_key, opts).await,
+            Self::OpenAI { api_key } => chat_openai(api_key, opts).await,
         }
     }
 }
@@ -130,6 +152,7 @@ async fn complete_anthropic(api_key: &str, opts: CompleteOptions) -> Result<Mode
                 Some("tool_use") => {
                     if let Some(name) = block["name"].as_str() {
                         tool_calls.push(ToolCall {
+                            id: block["id"].as_str().unwrap_or("").to_string(),
                             name: name.to_string(),
                             arguments: block["input"].clone(),
                         });
@@ -150,6 +173,7 @@ async fn complete_anthropic(api_key: &str, opts: CompleteOptions) -> Result<Mode
         input_tokens,
         output_tokens,
         duration_ms: start.elapsed().as_millis() as u64,
+        raw_assistant_message: resp_body.clone(),
     })
 }
 
@@ -221,11 +245,12 @@ async fn complete_openai(api_key: &str, opts: CompleteOptions) -> Result<ModelRe
     if let Some(calls) = message["tool_calls"].as_array() {
         for call in calls {
             if let Some(func) = call.get("function") {
+                let id = call["id"].as_str().unwrap_or("").to_string();
                 let name = func["name"].as_str().unwrap_or("").to_string();
                 let args_str = func["arguments"].as_str().unwrap_or("{}");
                 let arguments: Value =
                     serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
-                tool_calls.push(ToolCall { name, arguments });
+                tool_calls.push(ToolCall { id, name, arguments });
             }
         }
     }
@@ -242,7 +267,97 @@ async fn complete_openai(api_key: &str, opts: CompleteOptions) -> Result<ModelRe
         input_tokens,
         output_tokens,
         duration_ms: start.elapsed().as_millis() as u64,
+        raw_assistant_message: message.clone(),
     })
+}
+
+async fn chat_openai(api_key: &str, opts: ChatOptions) -> Result<ModelResponse> {
+    let model = opts.model.as_deref().unwrap_or("gpt-4o");
+    let reasoning = is_reasoning_model(model);
+
+    let base_tokens = opts.max_tokens.unwrap_or(4096);
+    let max_tokens = if reasoning { base_tokens * 4 } else { base_tokens };
+
+    let system_role = if reasoning { "developer" } else { "system" };
+
+    let mut messages = vec![serde_json::json!({"role": system_role, "content": opts.system})];
+    messages.extend(opts.messages);
+
+    let mut body = serde_json::json!({
+        "model": model,
+        "max_completion_tokens": max_tokens,
+        "messages": messages
+    });
+
+    if !reasoning {
+        if let Some(temp) = opts.temperature {
+            body["temperature"] = serde_json::json!(temp);
+        }
+    }
+
+    if let Some(tools) = &opts.tools {
+        body["tools"] = serde_json::json!(tools);
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
+    let start = Instant::now();
+
+    let resp = client
+        .post("https://api.openai.com/v1/chat/completions")
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await?;
+
+    let status = resp.status();
+    let resp_body: Value = resp.json().await?;
+
+    if !status.is_success() {
+        let err_msg = resp_body["error"]["message"]
+            .as_str()
+            .unwrap_or("Unknown API error");
+        return Err(anyhow!("OpenAI API error ({}): {}", status, err_msg));
+    }
+
+    let message = &resp_body["choices"][0]["message"];
+    let content = message["content"].as_str().unwrap_or("").to_string();
+
+    let mut tool_calls = Vec::new();
+    if let Some(calls) = message["tool_calls"].as_array() {
+        for call in calls {
+            if let Some(func) = call.get("function") {
+                let id = call["id"].as_str().unwrap_or("").to_string();
+                let name = func["name"].as_str().unwrap_or("").to_string();
+                let args_str = func["arguments"].as_str().unwrap_or("{}");
+                let arguments: Value =
+                    serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+                tool_calls.push(ToolCall { id, name, arguments });
+            }
+        }
+    }
+
+    let input_tokens = resp_body["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
+    let output_tokens = resp_body["usage"]["completion_tokens"]
+        .as_u64()
+        .unwrap_or(0);
+
+    Ok(ModelResponse {
+        content,
+        tool_calls,
+        model: model.to_string(),
+        input_tokens,
+        output_tokens,
+        duration_ms: start.elapsed().as_millis() as u64,
+        raw_assistant_message: message.clone(),
+    })
+}
+
+async fn chat_anthropic(_api_key: &str, _opts: ChatOptions) -> Result<ModelResponse> {
+    // TODO: implement Anthropic multi-turn when needed
+    Err(anyhow!("Anthropic multi-turn chat not yet implemented"))
 }
 
 /// Rough token count estimate. Uses ~4 chars per token heuristic.

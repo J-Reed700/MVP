@@ -229,9 +229,16 @@ fn extract_terms(text: &str) -> Vec<String> {
     result
 }
 
-fn build_framing(_task_type: TaskType, channel: &str) -> String {
+fn build_framing(task_type: TaskType, channel: &str) -> String {
+    let task_framing = match task_type {
+        TaskType::Respond => "You're responding to a live message. Be helpful, concise, and match the energy of what you're responding to.",
+        TaskType::Digest => "You're compiling a digest of recent activity. Summarize what happened, highlight what matters, skip noise.",
+        TaskType::Update => "You're writing a status update. Be clear about what's done, what's in progress, and what's blocked.",
+    };
+
     format!(
         "This message is from channel {channel}.\n\n\
+         {task_framing}\n\n\
          Use the tools available to you. Only say things you actually know. \
          Never fabricate people, projects, or facts. If you don't have context, say so."
     )

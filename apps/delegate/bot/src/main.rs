@@ -8,15 +8,20 @@ mod triage;
 mod workspace;
 
 use anyhow::{anyhow, Result};
-use tokio::sync::mpsc;
-use tracing::{error, info};
+use serde_json::Value;
+use std::collections::{HashSet, VecDeque};
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
+use tracing::{error, info, warn};
 
 use context::TaskType;
 use event::DelegateEvent;
-use models::{delegate_tools, CompleteOptions, ModelClient};
+use models::{delegate_tools, ChatOptions, CompleteOptions, ModelClient, ToolCall};
 use slack::SlackSocket;
 use triage::TriageLabel;
 use workspace::Workspace;
+
+const MAX_TOOL_TURNS: usize = 5;
 
 struct Config {
     slack_app_token: String,
@@ -85,11 +90,33 @@ async fn main() -> Result<()> {
 
     info!("Event loop running. Waiting for Slack events...");
 
+    // Dedup cache: track recently processed (channel, timestamp) pairs
+    let seen_events: Arc<Mutex<(HashSet<String>, VecDeque<String>)>> =
+        Arc::new(Mutex::new((HashSet::new(), VecDeque::new())));
+    const DEDUP_CACHE_SIZE: usize = 200;
+
     while let Some(envelope) = event_rx.recv().await {
         let evt = match event::normalize(&envelope) {
             Some(e) => e,
             None => continue,
         };
+
+        // Dedup: skip if we've already processed this (channel, ts) pair
+        let dedup_key = format!("{}:{}", evt.channel, evt.timestamp);
+        {
+            let mut cache = seen_events.lock().await;
+            if cache.0.contains(&dedup_key) {
+                info!(event_type = %evt.event_type, "Skipping duplicate event");
+                continue;
+            }
+            cache.0.insert(dedup_key.clone());
+            cache.1.push_back(dedup_key);
+            while cache.1.len() > DEDUP_CACHE_SIZE {
+                if let Some(old) = cache.1.pop_front() {
+                    cache.0.remove(&old);
+                }
+            }
+        }
 
         info!(
             event_type = %evt.event_type,
@@ -175,16 +202,20 @@ async fn handle_event(
 
     let thread_ts = event.thread_ts.as_deref().unwrap_or(&event.timestamp);
 
+    // Resolve user display name
+    let user_name = slack.get_user_name(&event.user).await;
+
     // Fetch thread context if this message is part of a thread
     let thread_context = if event.thread_ts.is_some() {
         let messages = slack.get_thread(&event.channel, thread_ts).await?;
         let mut lines = Vec::new();
         for msg in &messages {
-            let user = msg["user"].as_str().unwrap_or("unknown");
+            let uid = msg["user"].as_str().unwrap_or("unknown");
+            let name = slack.get_user_name(uid).await;
             let text = msg["text"].as_str().unwrap_or("");
             let ts = msg["ts"].as_str().unwrap_or("");
             if ts != event.timestamp {
-                lines.push(format!("<{user}> {text}"));
+                lines.push(format!("<{name}> {text}"));
             }
         }
         if lines.is_empty() {
@@ -198,8 +229,14 @@ async fn handle_event(
 
     let recent_logs = logger::read_recent_logs(ws.path()).await;
 
-    let compiled = context::compile(&event, ws.path(), TaskType::Respond, &recent_logs, 8000)
-        .await?;
+    let mut compiled =
+        context::compile(&event, ws.path(), TaskType::Respond, &recent_logs, 8000).await?;
+
+    // Override trigger with resolved display name instead of raw user ID
+    compiled.trigger = format!(
+        "Channel: {}\nFrom: {}\nTime: {}\n\n{}",
+        event.channel, user_name, event.timestamp, event.content
+    );
 
     let (system_prompt, mut user_prompt) = context::to_prompt(&compiled, &recent_logs);
 
@@ -214,14 +251,18 @@ async fn handle_event(
         "Calling LLM with tools..."
     );
 
+    let tools = delegate_tools();
+    let model = model_override.map(|s| s.to_string());
+
+    // First call uses single-shot complete
     let response = client
         .complete(CompleteOptions {
-            system: system_prompt,
-            prompt: user_prompt,
-            model: model_override.map(|s| s.to_string()),
+            system: system_prompt.clone(),
+            prompt: user_prompt.clone(),
+            model: model.clone(),
             max_tokens: Some(2048),
             temperature: Some(0.7),
-            tools: Some(delegate_tools()),
+            tools: Some(tools.clone()),
         })
         .await?;
 
@@ -234,135 +275,226 @@ async fn handle_event(
         "LLM response received"
     );
 
-    // Execute tool calls
-    for call in &response.tool_calls {
-        info!(tool = %call.name, args = %call.arguments, "Executing tool call");
+    let mut all_actions = Vec::new();
+    let mut has_reply = false;
+    let mut final_content = response.content.clone();
 
-        match call.name.as_str() {
-            "react" => {
-                let emoji = call.arguments["emoji"].as_str().unwrap_or("eyes");
-                slack
-                    .add_reaction(&event.channel, &event.timestamp, emoji)
-                    .await?;
-            }
-            "reply" => {
-                let text = call.arguments["text"].as_str().unwrap_or("");
-                if !text.is_empty() {
-                    slack
-                        .post_message(&event.channel, text, Some(thread_ts))
-                        .await?;
-                }
-            }
-            "post" => {
-                let channel = call.arguments["channel"].as_str().unwrap_or("");
-                let text = call.arguments["text"].as_str().unwrap_or("");
-                if !channel.is_empty() && !text.is_empty() {
-                    slack.post_message(channel, text, None).await?;
-                }
-            }
-            "no_action" => {
-                let reason = call.arguments["reason"].as_str().unwrap_or("no reason given");
-                info!(reason = %reason, "Model chose no_action");
-            }
-            "create_skill" => {
-                let name = call.arguments["name"].as_str().unwrap_or("");
-                let description = call.arguments["description"].as_str().unwrap_or("");
-                let content = call.arguments["content"].as_str().unwrap_or("");
-                if !name.is_empty() && !content.is_empty() {
-                    let skill_dir = ws.path().join("skills").join(name);
-                    if let Err(e) = tokio::fs::create_dir_all(&skill_dir).await {
-                        error!(skill = %name, error = %e, "Failed to create skill directory");
-                    } else {
-                        let skill_md = format!(
-                            "---\nname: {name}\ndescription: {description}\n---\n\n{content}\n"
-                        );
-                        let skill_path = skill_dir.join("SKILL.md");
-                        match tokio::fs::write(&skill_path, &skill_md).await {
-                            Ok(_) => {
-                                info!(skill = %name, "Created skill");
-                            }
-                            Err(e) => error!(skill = %name, error = %e, "Failed to write skill"),
-                        }
-                    }
-                }
-            }
-            "read_file" => {
-                let path = call.arguments["path"].as_str().unwrap_or("");
-                if !path.is_empty() {
-                    let full = ws.path().join(path);
-                    // Block path traversal
-                    if let Ok(canonical) = tokio::fs::canonicalize(&full).await {
-                        let ws_canonical = tokio::fs::canonicalize(ws.path()).await.unwrap_or_default();
-                        if canonical.starts_with(&ws_canonical) {
-                            match tokio::fs::read_to_string(&canonical).await {
-                                Ok(contents) => {
-                                    info!(path = %path, len = contents.len(), "Read file");
-                                    // File contents are available for the model in multi-turn,
-                                    // but for now we just log it
-                                }
-                                Err(e) => info!(path = %path, error = %e, "File not found"),
-                            }
-                        } else {
-                            info!(path = %path, "Blocked path traversal attempt");
-                        }
-                    } else {
-                        info!(path = %path, "File does not exist");
-                    }
-                }
-            }
-            "write_file" => {
-                let path = call.arguments["path"].as_str().unwrap_or("");
-                let content = call.arguments["content"].as_str().unwrap_or("");
-                if !path.is_empty() {
-                    // Block path traversal: no ".." components allowed
-                    if path.contains("..") {
-                        info!(path = %path, "Blocked path traversal attempt");
-                    } else {
-                        let full = ws.path().join(path);
-                        if let Some(parent) = full.parent() {
-                            let _ = tokio::fs::create_dir_all(parent).await;
-                        }
-                        match tokio::fs::write(&full, content).await {
-                            Ok(_) => {
-                                info!(path = %path, "Wrote file");
-                            }
-                            Err(e) => error!(path = %path, error = %e, "Failed to write file"),
-                        }
-                    }
-                }
-            }
-            other => {
-                info!(tool = %other, "Unknown tool call, skipping");
-            }
+    // Execute tools and potentially loop for multi-turn
+    let mut current_response = response;
+    let mut turn = 0;
+
+    loop {
+        if current_response.tool_calls.is_empty() {
+            break;
         }
+
+        let mut tool_results: Vec<(String, String)> = Vec::new(); // (tool_call_id, result)
+        let mut needs_followup = false;
+
+        for call in &current_response.tool_calls {
+            info!(tool = %call.name, "Executing tool call");
+            all_actions.push(call.name.clone());
+
+            let result = execute_tool(call, slack, ws, &event, thread_ts).await;
+
+            if call.name == "reply" {
+                has_reply = true;
+            }
+
+            // Tools that return data need a followup turn
+            if call.name == "read_file" {
+                needs_followup = true;
+            }
+
+            tool_results.push((call.id.clone(), result));
+        }
+
+        turn += 1;
+        if !needs_followup || turn >= MAX_TOOL_TURNS {
+            break;
+        }
+
+        // Build message history for multi-turn
+        let mut messages: Vec<Value> = vec![
+            serde_json::json!({"role": "user", "content": user_prompt}),
+            current_response.raw_assistant_message.clone(),
+        ];
+
+        // Append tool results
+        for (tool_call_id, result) in &tool_results {
+            messages.push(serde_json::json!({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": result
+            }));
+        }
+
+        info!(turn = turn, "Multi-turn: sending tool results back to LLM");
+
+        let next_response = client
+            .chat(ChatOptions {
+                system: system_prompt.clone(),
+                messages,
+                model: model.clone(),
+                max_tokens: Some(2048),
+                temperature: Some(0.7),
+                tools: Some(tools.clone()),
+            })
+            .await?;
+
+        info!(
+            tool_calls = next_response.tool_calls.len(),
+            content_len = next_response.content.len(),
+            "Multi-turn response received"
+        );
+
+        final_content = next_response.content.clone();
+        current_response = next_response;
     }
 
     // If model returned text content but no reply tool call, post it
-    if !response.content.is_empty()
-        && !response.tool_calls.iter().any(|c| c.name == "reply")
-    {
+    if !final_content.is_empty() && !has_reply {
         info!("Model returned text content without reply tool, posting as reply");
         slack
-            .post_message(&event.channel, &response.content, Some(thread_ts))
+            .post_message(&event.channel, &final_content, Some(thread_ts))
             .await?;
     }
 
     // Log the interaction
     logger::append_log(ws.path(), &event.channel, &event.user, &event.content).await?;
-
-    let actions: Vec<String> = response
-        .tool_calls
-        .iter()
-        .map(|c| c.name.clone())
-        .collect();
-    logger::append_log(
-        ws.path(),
-        &event.channel,
-        "delegate-bot",
-        &format!("[actions: {}]", actions.join(", ")),
-    )
-    .await?;
+    if !all_actions.is_empty() {
+        logger::append_log(
+            ws.path(),
+            &event.channel,
+            "delegate-bot",
+            &format!("[actions: {}]", all_actions.join(", ")),
+        )
+        .await?;
+    }
 
     Ok(())
+}
+
+/// Execute a single tool call and return a result string for multi-turn.
+async fn execute_tool(
+    call: &ToolCall,
+    slack: &SlackSocket,
+    ws: &Workspace,
+    event: &DelegateEvent,
+    thread_ts: &str,
+) -> String {
+    match call.name.as_str() {
+        "react" => {
+            let emoji = call.arguments["emoji"].as_str().unwrap_or("eyes");
+            match slack
+                .add_reaction(&event.channel, &event.timestamp, emoji)
+                .await
+            {
+                Ok(_) => format!("Reacted with :{emoji}:"),
+                Err(e) => format!("Failed to react: {e}"),
+            }
+        }
+        "reply" => {
+            let text = call.arguments["text"].as_str().unwrap_or("");
+            if !text.is_empty() {
+                match slack
+                    .post_message(&event.channel, text, Some(thread_ts))
+                    .await
+                {
+                    Ok(_) => "Reply posted".to_string(),
+                    Err(e) => format!("Failed to reply: {e}"),
+                }
+            } else {
+                "Empty reply, skipped".to_string()
+            }
+        }
+        "post" => {
+            let channel = call.arguments["channel"].as_str().unwrap_or("");
+            let text = call.arguments["text"].as_str().unwrap_or("");
+            if !channel.is_empty() && !text.is_empty() {
+                match slack.post_message(channel, text, None).await {
+                    Ok(_) => format!("Posted to {channel}"),
+                    Err(e) => format!("Failed to post: {e}"),
+                }
+            } else {
+                "Missing channel or text, skipped".to_string()
+            }
+        }
+        "no_action" => {
+            let reason = call.arguments["reason"].as_str().unwrap_or("no reason given");
+            info!(reason = %reason, "Model chose no_action");
+            format!("No action taken: {reason}")
+        }
+        "create_skill" => {
+            let name = call.arguments["name"].as_str().unwrap_or("");
+            let description = call.arguments["description"].as_str().unwrap_or("");
+            let content = call.arguments["content"].as_str().unwrap_or("");
+            if !name.is_empty() && !content.is_empty() {
+                let skill_dir = ws.path().join("skills").join(name);
+                if let Err(e) = tokio::fs::create_dir_all(&skill_dir).await {
+                    return format!("Failed to create skill directory: {e}");
+                }
+                let skill_md =
+                    format!("---\nname: {name}\ndescription: {description}\n---\n\n{content}\n");
+                let skill_path = skill_dir.join("SKILL.md");
+                match tokio::fs::write(&skill_path, &skill_md).await {
+                    Ok(_) => {
+                        info!(skill = %name, "Created skill");
+                        format!("Skill '{name}' created")
+                    }
+                    Err(e) => format!("Failed to write skill: {e}"),
+                }
+            } else {
+                "Missing name or content for skill".to_string()
+            }
+        }
+        "read_file" => {
+            let path = call.arguments["path"].as_str().unwrap_or("");
+            if path.is_empty() {
+                return "No path provided".to_string();
+            }
+            if path.contains("..") {
+                return "Path traversal blocked".to_string();
+            }
+            let full = ws.path().join(path);
+            match tokio::fs::read_to_string(&full).await {
+                Ok(contents) => {
+                    info!(path = %path, len = contents.len(), "Read file");
+                    // Truncate very large files to avoid blowing up context
+                    if contents.len() > 10000 {
+                        format!("{}\n\n[truncated, {} bytes total]", &contents[..10000], contents.len())
+                    } else {
+                        contents
+                    }
+                }
+                Err(_) => format!("File not found: {path}"),
+            }
+        }
+        "write_file" => {
+            let path = call.arguments["path"].as_str().unwrap_or("");
+            let content = call.arguments["content"].as_str().unwrap_or("");
+            if path.is_empty() {
+                return "No path provided".to_string();
+            }
+            if path.contains("..") {
+                return "Path traversal blocked".to_string();
+            }
+            let full = ws.path().join(path);
+            if let Some(parent) = full.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            match tokio::fs::write(&full, content).await {
+                Ok(_) => {
+                    info!(path = %path, "Wrote file");
+                    format!("Written to {path}")
+                }
+                Err(e) => format!("Failed to write {path}: {e}"),
+            }
+        }
+        other => {
+            warn!(tool = %other, "Unknown tool call");
+            format!("Unknown tool: {other}")
+        }
+    }
 }
 

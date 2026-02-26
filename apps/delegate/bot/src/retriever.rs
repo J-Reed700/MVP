@@ -27,12 +27,19 @@ pub async fn retrieve(
     max_results: usize,
     context_lines: usize,
 ) -> Result<Vec<RetrievalResult>> {
-    let pattern = workspace.join("**/*.md");
-    let pattern_str = pattern.to_string_lossy().replace('\\', "/");
+    // Search markdown and JSON files
+    let md_pattern = workspace.join("**/*.md").to_string_lossy().replace('\\', "/");
+    let json_pattern = workspace.join("**/*.json").to_string_lossy().replace('\\', "/");
 
-    let files: Vec<PathBuf> = glob(&pattern_str)?
-        .filter_map(|entry| entry.ok())
-        .collect();
+    let mut files: Vec<PathBuf> = Vec::new();
+    for pattern_str in [&md_pattern, &json_pattern] {
+        if let Ok(entries) = glob(pattern_str) {
+            files.extend(entries.filter_map(|e| e.ok()));
+        }
+    }
+    // Dedup in case of overlap
+    files.sort();
+    files.dedup();
 
     // Pre-compile all regexes once (not per-line)
     let mut compiled_terms: Vec<(regex::Regex, bool)> = Vec::new();
