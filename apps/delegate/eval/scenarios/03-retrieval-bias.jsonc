@@ -1,0 +1,58 @@
+{
+  // Scenario 3: Retrieval Bias
+  // Hypothesis: Intent-biased retrieval produces strategically better answers.
+  // Kill condition: Both variants produce roughly equivalent responses.
+
+  "id": "03-retrieval-bias",
+  "name": "Retrieval Bias",
+  "hypothesis": "Intent-biased retrieval produces strategically better answers by connecting surface-level questions to strategic context.",
+
+  "trigger": {
+    "type": "slack_message",
+    "channel": "#platform-eng",
+    "user": "Nina Kowalski",
+    "timestamp": "2026-02-25T15:00:00-05:00",
+    "content": "How's the API team doing?"
+  },
+
+  "task": "Answer this question from Nina Kowalski (Director of Engineering, Sarah's manager). Draw on what you know about the team's current work and priorities.",
+
+  "variants": [
+    {
+      "id": "unbiased-retrieval",
+      "label": "A: Unbiased Retrieval",
+      "description": "Search only for 'API team' — no intent-based augmentation",
+      "includeIntents": true,
+      "retrievalBias": [],
+      "retrievalTerms": ["API team", "Marcus", "API gateway"],
+      "audience": {
+        "name": "Nina Kowalski",
+        "instructions": "Respond to Nina, the Director of Engineering. She prefers structured updates and wants to know about risks before they become problems."
+      }
+    },
+    {
+      "id": "biased-retrieval",
+      "label": "B: Intent-Biased Retrieval",
+      "description": "Search for 'API team' AND billing migration terms (because INTENTS.md flags API team velocity as a watched signal)",
+      "includeIntents": true,
+      "retrievalBias": ["billing migration", "March 15 deadline", "PLAT-350", "PLAT-351", "enterprise tier"],
+      "retrievalTerms": ["API team", "Marcus", "API gateway"],
+      "audience": {
+        "name": "Nina Kowalski",
+        "instructions": "Respond to Nina, the Director of Engineering. She prefers structured updates and wants to know about risks before they become problems."
+      }
+    }
+  ],
+
+  "evaluation": {
+    "criteria": [
+      "Does Variant B connect API team status to the billing migration timeline?",
+      "Does Variant B mention the downstream impact (enterprise tier blocked)?",
+      "Does Variant B flag the March 15 deadline context?",
+      "Does Variant B mention Alex being blocked on the legacy schema question?",
+      "Does Variant A answer accurately but miss the strategic connection?",
+      "Does Variant A treat the question as a simple status check?"
+    ],
+    "killCondition": "Both variants produce roughly equivalent responses — the biased retrieval adds no strategic value."
+  }
+}

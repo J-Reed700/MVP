@@ -6,7 +6,9 @@
 
 ## What Good Looks Like
 
-A team adds Delegate to their Slack and connects their project tools. Within a day, no one on the team is doing coordination work anymore. Status updates write themselves. Blockers surface before anyone notices them. New engineers ask questions and get answers with full historical context. The backlog stays clean. Stakeholders stop pinging the tech lead for updates.
+A team adds Delegate to their Slack and connects their project tools. On day one, Delegate is already useful — it answers questions from ingested history, posts its first standup, and flags stale tickets — but it's visibly learning. It asks clarifying questions. It gets some things wrong. The team corrects it and it remembers.
+
+By week two, no one on the team is doing coordination work anymore. Status updates write themselves. Blockers surface before anyone notices them. New engineers ask questions and get answers with full historical context. The backlog stays clean. Stakeholders stop pinging the tech lead for updates.
 
 Nobody talks about Delegate the way they talk about a tool. They talk about it the way they talk about a teammate who's quietly excellent at their job.
 
@@ -18,11 +20,11 @@ Delegate is evaluated by whether these behaviors emerge reliably. Each one is a 
 
 ### It knows what's happening
 
-Delegate maintains a continuously updated mental model of every active project, every open thread, every commitment made by every person. When someone asks "where are we on X?" the answer is instant, accurate, and includes context the asker didn't know they needed. It never says "I'm not sure, let me check." It already checked.
+Delegate maintains a continuously updated mental model of every active project, every open thread, every commitment made by every person. When someone asks "where are we on X?" the answer comes faster and more accurately than any human could produce — with context the asker didn't know they needed. No one has to chase down three people and wait a day. Delegate has already done the legwork.
 
 ### It acts before being asked
 
-Delegate does not wait for prompts. It notices a ticket has been in review for three days and pings the reviewer. It sees a scope question raised in a thread and creates a decision ticket before the thread dies. It detects that a sprint is trending behind and flags it with specifics. The team's experience is that problems get smaller because they get caught earlier.
+Delegate does not wait for prompts. This requires near-real-time awareness of team activity — events from Slack, Jira, and other tools trigger evaluation as they happen, not on a polling delay. It notices a ticket has been in review for three days and pings the reviewer. It sees a scope question raised in a thread and creates a decision ticket before the thread dies. It detects that a sprint is trending behind and flags it with specifics. The team's experience is that problems get smaller because they get caught earlier.
 
 ### It writes like a person who's been in the room
 
@@ -51,7 +53,7 @@ Delegate lives in the tools the team already uses. It has no interface of its ow
 | **Messaging** (Slack, Teams, Discord) | Where Delegate lives. Reads channels, responds to questions, posts proactive updates, DMs individuals for input, participates in threads. It is a member of the team. |
 | **Project Tracking** (Jira, Linear, Asana) | Reads and writes tickets. Creates, updates, reprioritizes, assigns, comments, and closes. Understands the schema and workflow of the specific tool being used. |
 | **Documentation** (Confluence, Notion, Google Docs) | Writes and maintains documents. PRDs, decision logs, meeting notes, onboarding guides. Keeps them current as the project evolves. |
-| **Calendar** | Reads meeting schedules to prepare agendas and context. After meetings, processes transcripts or notes into structured action items. |
+| **Calendar** | Reads meeting schedules to prepare agendas and context. MVP scope is schedule awareness and agenda prep only. Transcript processing (extracting action items, decisions, and owners from meeting recordings) is deferred to post-MVP. |
 | **Email** | For stakeholder communication. Drafts and sends routine updates. Drafts non-routine communication for human review before sending. |
 | **Customer Data** (support tools, CRM, analytics) | Ingests feedback signals and maps them to product context. Connects what customers are saying to what the team is building. |
 
@@ -83,7 +85,31 @@ Not every action should be autonomous. The system needs a clear model for what i
 - Closing or archiving tickets others created
 - Any action the team has explicitly flagged as approval-required
 
+Approvals happen in Slack. Delegate sends a DM to the designated approver with a summary of the proposed action, its reasoning, and react-to-approve/reject options. If no response within a configurable timeout (default: 4 hours), Delegate escalates to a backup approver. If the backup also times out, the action is logged as expired and Delegate notifies the team channel. No separate approval UI — the workflow lives where the team already works.
+
 The team can move any action between these tiers at any time. The defaults should feel conservative. Trust is earned, not assumed.
+
+---
+
+## What to Expect When
+
+Setting expectations is part of the product. Teams that know what's coming trust faster than teams that are surprised.
+
+### Hour 1: Onboarding conversation
+
+Delegate starts a Slack DM with the team lead. Structured questions about team composition, active projects, communication norms, and what "good" looks like. This takes ~15 minutes and gives Delegate enough to start working.
+
+### Day 1: Useful but learning
+
+Delegate can answer basic questions from ingested history ("what's the status of Project X?"), posts its first standup summary, and flags obviously stale tickets. It will get things wrong. It asks clarifying questions. The team corrects it and those corrections stick.
+
+### Week 1: Proactive behaviors emerge
+
+With a week of observed patterns, Delegate starts acting before being asked — nudging stale reviews, surfacing blockers, connecting related threads. The quality of these interventions improves daily as it accumulates context.
+
+### Week 2+: Reliable coordination
+
+The team stops doing coordination work. Standups, status updates, ticket hygiene, stakeholder communication — Delegate handles these with minimal correction. The team's job is to steer and override, not to manage.
 
 ---
 
