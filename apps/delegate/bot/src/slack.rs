@@ -11,6 +11,8 @@ use tracing as _;
 
 /// Slack Socket Mode client.
 /// Connects via WebSocket, receives events, sends acknowledgments.
+/// Clone is cheap — the HTTP client and user cache are shared via Arc.
+#[derive(Clone)]
 pub struct SlackSocket {
     pub app_token: String,
     pub bot_token: String,
@@ -141,7 +143,7 @@ impl SlackSocket {
             .ok_or_else(|| anyhow!("No URL in apps.connections.open response"))
     }
 
-    /// Post a message to a Slack channel.
+    /// Post a message to a Slack channel. Retries on transient failures.
     pub async fn post_message(
         &self,
         channel: &str,
@@ -157,27 +159,55 @@ impl SlackSocket {
             body["thread_ts"] = serde_json::json!(ts);
         }
 
-        let resp = self
-            .http
-            .post("https://slack.com/api/chat.postMessage")
-            .header("Authorization", format!("Bearer {}", self.bot_token))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+        let mut last_err = None;
+        for attempt in 0..3u32 {
+            let resp = match self
+                .http
+                .post("https://slack.com/api/chat.postMessage")
+                .header("Authorization", format!("Bearer {}", self.bot_token))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!(attempt = attempt + 1, error = %e, "chat.postMessage request failed, retrying");
+                    last_err = Some(anyhow::Error::from(e));
+                    tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
+                    continue;
+                }
+            };
 
-        let result: Value = resp.json().await?;
+            let result: Value = resp.json().await?;
 
-        if result.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            if result.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                return Ok(result);
+            }
+
             let err = result
                 .get("error")
                 .and_then(|e| e.as_str())
                 .unwrap_or("unknown error");
+
+            // Retry on rate limits and server errors
+            if err == "ratelimited" || err == "internal_error" || err == "service_unavailable" {
+                let retry_after = result.get("headers")
+                    .and_then(|h| h.get("Retry-After"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(2u64.pow(attempt));
+                warn!(attempt = attempt + 1, err = %err, "chat.postMessage failed, retrying after {retry_after}s");
+                last_err = Some(anyhow!("chat.postMessage failed: {err}"));
+                tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
+                continue;
+            }
+
+            // Non-retryable error
             error!("chat.postMessage failed: {err}");
             return Err(anyhow!("chat.postMessage failed: {err}"));
         }
 
-        Ok(result)
+        Err(last_err.unwrap_or_else(|| anyhow!("chat.postMessage failed after retries")))
     }
 
     /// Update an existing message.
@@ -305,6 +335,63 @@ impl SlackSocket {
         }
 
         Ok(())
+    }
+
+    /// Open a DM channel with a user and send a message.
+    pub async fn send_dm(&self, user_id: &str, text: &str) -> Result<Value> {
+        // Open DM channel
+        let resp = self
+            .http
+            .post("https://slack.com/api/conversations.open")
+            .header("Authorization", format!("Bearer {}", self.bot_token))
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({"users": user_id}))
+            .send()
+            .await?;
+
+        let body: Value = resp.json().await?;
+        if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let err = body.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
+            return Err(anyhow!("conversations.open failed: {err}"));
+        }
+
+        let dm_channel = body["channel"]["id"]
+            .as_str()
+            .ok_or_else(|| anyhow!("No channel ID in conversations.open response"))?;
+
+        // Send message to DM channel
+        self.post_message(dm_channel, text, None).await
+    }
+
+    /// Fetch recent messages from a channel using conversations.history.
+    pub async fn get_channel_history(
+        &self,
+        channel: &str,
+        limit: u32,
+    ) -> Result<Vec<Value>> {
+        let resp = self
+            .http
+            .get("https://slack.com/api/conversations.history")
+            .header("Authorization", format!("Bearer {}", self.bot_token))
+            .query(&[
+                ("channel", channel),
+                ("limit", &limit.to_string()),
+            ])
+            .send()
+            .await?;
+
+        let body: Value = resp.json().await?;
+
+        if body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let err = body
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown error");
+            warn!("conversations.history failed: {err}");
+            return Ok(Vec::new());
+        }
+
+        Ok(body["messages"].as_array().cloned().unwrap_or_default())
     }
 
     /// Resolve a user ID to a display name. Results are cached.

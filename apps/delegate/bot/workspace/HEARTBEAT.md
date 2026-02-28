@@ -12,5 +12,6 @@
 - **ignore:** Bot's own messages, channel join/leave noise
 
 ## Token Budgets
+- Daily budget: 500000 tokens
 - Question answering: 8000 tokens
 - Triage classification: 500 tokens

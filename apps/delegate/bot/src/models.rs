@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Instant;
+use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -67,18 +68,51 @@ impl ModelClient {
     }
 
     pub async fn complete(&self, opts: CompleteOptions) -> Result<ModelResponse> {
-        match self {
-            Self::Anthropic { api_key } => complete_anthropic(api_key, opts).await,
-            Self::OpenAI { api_key } => complete_openai(api_key, opts).await,
+        let mut last_err = None;
+        for attempt in 0..3 {
+            let result = match self {
+                Self::Anthropic { api_key } => complete_anthropic(api_key, opts.clone()).await,
+                Self::OpenAI { api_key } => complete_openai(api_key, opts.clone()).await,
+            };
+            match result {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    let msg = e.to_string();
+                    // Don't retry on auth errors or bad requests
+                    if msg.contains("401") || msg.contains("403") || msg.contains("400") {
+                        return Err(e);
+                    }
+                    warn!(attempt = attempt + 1, error = %e, "LLM call failed, retrying");
+                    last_err = Some(e);
+                    tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
+                }
+            }
         }
+        Err(last_err.unwrap_or_else(|| anyhow!("LLM call failed after retries")))
     }
 
     /// Multi-turn completion with explicit message history.
     pub async fn chat(&self, opts: ChatOptions) -> Result<ModelResponse> {
-        match self {
-            Self::Anthropic { api_key } => chat_anthropic(api_key, opts).await,
-            Self::OpenAI { api_key } => chat_openai(api_key, opts).await,
+        let mut last_err = None;
+        for attempt in 0..3 {
+            let result = match self {
+                Self::Anthropic { api_key } => chat_anthropic(api_key, opts.clone()).await,
+                Self::OpenAI { api_key } => chat_openai(api_key, opts.clone()).await,
+            };
+            match result {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("401") || msg.contains("403") || msg.contains("400") {
+                        return Err(e);
+                    }
+                    warn!(attempt = attempt + 1, error = %e, "LLM chat call failed, retrying");
+                    last_err = Some(e);
+                    tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
+                }
+            }
         }
+        Err(last_err.unwrap_or_else(|| anyhow!("LLM chat call failed after retries")))
     }
 }
 
@@ -355,9 +389,171 @@ async fn chat_openai(api_key: &str, opts: ChatOptions) -> Result<ModelResponse> 
     })
 }
 
-async fn chat_anthropic(_api_key: &str, _opts: ChatOptions) -> Result<ModelResponse> {
-    // TODO: implement Anthropic multi-turn when needed
-    Err(anyhow!("Anthropic multi-turn chat not yet implemented"))
+async fn chat_anthropic(api_key: &str, opts: ChatOptions) -> Result<ModelResponse> {
+    let model = opts.model.as_deref().unwrap_or("claude-sonnet-4-6");
+    let max_tokens = opts.max_tokens.unwrap_or(4096);
+    let temperature = opts.temperature.unwrap_or(0.7);
+
+    // Convert OpenAI-style messages to Anthropic format.
+    // The main loop sends: user, assistant (raw), tool results (role=tool).
+    // Anthropic expects: user, assistant (content blocks), user (tool_result blocks).
+    let messages = convert_messages_to_anthropic(&opts.messages);
+
+    let mut body = serde_json::json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "system": opts.system,
+        "messages": messages
+    });
+
+    if let Some(tools) = &opts.tools {
+        let anthropic_tools: Vec<Value> = tools
+            .iter()
+            .filter_map(|t| {
+                let func = t.get("function")?;
+                Some(serde_json::json!({
+                    "name": func["name"],
+                    "description": func["description"],
+                    "input_schema": func["parameters"]
+                }))
+            })
+            .collect();
+        body["tools"] = serde_json::json!(anthropic_tools);
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
+    let start = Instant::now();
+
+    let resp = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await?;
+
+    let status = resp.status();
+    let resp_body: Value = resp.json().await?;
+
+    if !status.is_success() {
+        let err_msg = resp_body["error"]["message"]
+            .as_str()
+            .unwrap_or("Unknown API error");
+        return Err(anyhow!("Anthropic API error ({}): {}", status, err_msg));
+    }
+
+    let mut content = String::new();
+    let mut tool_calls = Vec::new();
+
+    if let Some(blocks) = resp_body["content"].as_array() {
+        for block in blocks {
+            match block["type"].as_str() {
+                Some("text") => {
+                    if let Some(text) = block["text"].as_str() {
+                        if !content.is_empty() {
+                            content.push('\n');
+                        }
+                        content.push_str(text);
+                    }
+                }
+                Some("tool_use") => {
+                    if let Some(name) = block["name"].as_str() {
+                        tool_calls.push(ToolCall {
+                            id: block["id"].as_str().unwrap_or("").to_string(),
+                            name: name.to_string(),
+                            arguments: block["input"].clone(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let input_tokens = resp_body["usage"]["input_tokens"].as_u64().unwrap_or(0);
+    let output_tokens = resp_body["usage"]["output_tokens"].as_u64().unwrap_or(0);
+
+    Ok(ModelResponse {
+        content,
+        tool_calls,
+        model: model.to_string(),
+        input_tokens,
+        output_tokens,
+        duration_ms: start.elapsed().as_millis() as u64,
+        raw_assistant_message: resp_body.clone(),
+    })
+}
+
+/// Convert OpenAI-style message history to Anthropic format.
+///
+/// Input format (from main.rs multi-turn loop):
+///   - { role: "user", content: "..." }
+///   - { role: "assistant", ... }  (raw Anthropic response with content blocks)
+///   - { role: "tool", tool_call_id: "...", content: "..." }  (one per tool result)
+///
+/// Anthropic format:
+///   - { role: "user", content: "..." }
+///   - { role: "assistant", content: [...tool_use blocks...] }
+///   - { role: "user", content: [...tool_result blocks...] }
+fn convert_messages_to_anthropic(messages: &[Value]) -> Vec<Value> {
+    let mut result = Vec::new();
+
+    let mut i = 0;
+    while i < messages.len() {
+        let msg = &messages[i];
+        let role = msg["role"].as_str().unwrap_or("");
+
+        match role {
+            "user" => {
+                result.push(msg.clone());
+                i += 1;
+            }
+            "assistant" => {
+                // The raw_assistant_message from Anthropic already has the right format.
+                // Extract just the content array for the assistant turn.
+                if let Some(content) = msg.get("content") {
+                    result.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": content
+                    }));
+                } else {
+                    // Fallback: pass through as-is
+                    result.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": msg["content"].clone()
+                    }));
+                }
+                i += 1;
+            }
+            "tool" => {
+                // Collect consecutive tool results into a single user message
+                // with tool_result content blocks (Anthropic format)
+                let mut tool_results = Vec::new();
+                while i < messages.len() && messages[i]["role"].as_str() == Some("tool") {
+                    let tool_msg = &messages[i];
+                    tool_results.push(serde_json::json!({
+                        "type": "tool_result",
+                        "tool_use_id": tool_msg["tool_call_id"].as_str().unwrap_or(""),
+                        "content": tool_msg["content"].as_str().unwrap_or("")
+                    }));
+                    i += 1;
+                }
+                result.push(serde_json::json!({
+                    "role": "user",
+                    "content": tool_results
+                }));
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    result
 }
 
 /// Rough token count estimate. Uses ~4 chars per token heuristic.
@@ -500,6 +696,111 @@ pub fn delegate_tools() -> Vec<Value> {
                         }
                     },
                     "required": ["path", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "dm_user",
+                "description": "Send a direct message to a specific user. Use this for private nudges, approval requests, or sensitive information that shouldn't be in a public channel. The user will receive it as a DM from the bot.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "user": {
+                            "type": "string",
+                            "description": "User ID to DM (e.g. U012345)"
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "Message text to send as a DM"
+                        }
+                    },
+                    "required": ["user", "text"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "channel_history",
+                "description": "Read recent messages from a Slack channel. Returns the most recent messages (newest first). Use this to get broader context about what's happening in a channel beyond the current thread.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "channel": {
+                            "type": "string",
+                            "description": "Channel ID to read history from"
+                        },
+                        "count": {
+                            "type": "integer",
+                            "description": "Number of messages to fetch (default 20, max 50)"
+                        }
+                    },
+                    "required": ["channel"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "save_memory",
+                "description": "Persist a piece of knowledge to long-term memory. Writes to memory/{topic}.md and automatically updates MEMORY.md as a structured index. Use this when you learn something worth retaining: people's roles, project context, team preferences, decisions made, or corrections from the team. If the topic already exists, it will be overwritten — read it first if you want to append.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "topic": {
+                            "type": "string",
+                            "description": "Topic slug in kebab-case (e.g. people, billing-migration, team-norms, standup-format)"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Markdown content to persist. Be structured: use headings, bullets, and dates for context."
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "One-line summary for the MEMORY.md index entry (e.g. 'Team members, roles, and working styles')"
+                        }
+                    },
+                    "required": ["topic", "content", "summary"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "recall_memory",
+                "description": "Search your long-term memory for information about a topic. Scans all memory files for matching content. Use this when someone asks 'what do you know about X?' or when you need context you might have stored previously. Returns matching excerpts from memory files.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "What to search for in memory (e.g. 'billing migration', 'Alan', 'team standup format')"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "update_intents",
+                "description": "Update INTENTS.md based on your observations. Use this when you notice a new project, priority shift, or recurring theme that should influence how you triage and respond. Read INTENTS.md first to understand the current state before modifying. Provide the FULL updated content — this replaces the file entirely.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "content": {
+                            "type": "string",
+                            "description": "Full updated INTENTS.md content in markdown"
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Brief explanation of what changed and why (logged for auditability)"
+                        }
+                    },
+                    "required": ["content", "reason"]
                 }
             }
         }

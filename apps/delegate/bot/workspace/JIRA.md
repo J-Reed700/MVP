@@ -11,7 +11,7 @@
 ## E-001: Core Bot Runtime
 
 **Owner:** Alan
-**Status:** in-progress
+**Status:** done
 
 | ID | Task | Assignee | Status | Notes |
 |----|------|----------|--------|-------|
@@ -23,58 +23,58 @@
 | T-006 | Skill registry (SKILL.md pattern) | Alan | done | |
 | T-007 | Self-authoring skills (create_skill) | Alan | done | |
 | T-008 | File I/O tools (read_file, write_file) | Alan | done | |
-| T-009 | Multi-turn tool use (read → decide → write in one event) | | todo | Model currently gets one shot; needs tool result loop so it can read a file then act on it |
-| T-010 | Deduplication of events (message + app_mention for same msg) | | todo | Edited messages trigger both message_changed and app_mention |
+| T-009 | Multi-turn tool use (read → decide → write in one event) | Alan | done | Tool loop with accumulated conversation history, up to 5 turns |
+| T-010 | Deduplication of events (message + app_mention for same msg) | Alan | done | LRU cache (200 entries) keyed on channel:timestamp |
 
 ---
 
 ## E-002: Heartbeat & Scheduling
 
-**Owner:**
-**Status:** todo
+**Owner:** Alan
+**Status:** done
 
 Spec: 5-min heartbeat scans for changes, cron for scheduled outputs. Heartbeat diffs daily log since last tick; no-op if nothing new.
 
 | ID | Task | Assignee | Status | Notes |
 |----|------|----------|--------|-------|
-| T-011 | Heartbeat loop (configurable interval, default 5 min) | | todo | Wake, scan daily log since last tick, decide if anything needs attention |
-| T-012 | Cron scheduler for recurring outputs | | todo | Standup at 9:15am, weekly summary Friday 4pm, etc. Definitions in HEARTBEAT.md |
-| T-013 | HEARTBEAT.md as control surface | | todo | Team-editable config: interval, cron schedules, triage rules, watch patterns |
-| T-014 | Batched reasoning on heartbeat tick | | todo | Accumulate queued events, reason about them as a batch through intent lens |
-| T-015 | Daily token budget + log-only mode | | backlog | 500K tokens/day default, enter log-only mode when exhausted, notify team |
+| T-011 | Heartbeat loop (configurable interval, default 5 min) | Alan | done | Background loop scans daily log diffs, batched reasoning on new entries, no-op when nothing changed |
+| T-012 | Cron scheduler for recurring outputs | Alan | done | Parses schedule from HEARTBEAT.md, fires at configured times, posts to target channels with appropriate TaskType |
+| T-013 | HEARTBEAT.md as control surface | Alan | done | Parses interval, cron jobs (time/day/channel/type), token budgets. Hot-reloads every tick. Unit tested |
+| T-014 | Batched reasoning on heartbeat tick | Alan | done | Queued events tagged [queued], heartbeat skips reasoning when no queued entries, batch prompt looks for cross-signal patterns |
+| T-015 | Daily token budget + log-only mode | Alan | done | Shared TokenBudget tracker, 500K/day default from HEARTBEAT.md, log-only mode with team notification, midnight reset |
 
 ---
 
 ## E-003: Memory System
 
-**Owner:**
-**Status:** todo
+**Owner:** Alan
+**Status:** done
 
 Spec: three layers — conversation context, project state, organizational knowledge. Inspectable, correctable, grows over time.
 
 | ID | Task | Assignee | Status | Notes |
 |----|------|----------|--------|-------|
-| T-016 | MEMORY.md as structured index to topic files | | todo | Agent maintains this itself; points to memory/*.md |
-| T-017 | Agent-driven memory writes (learn → persist → index) | | todo | When bot learns something worth retaining, write to memory/ and update MEMORY.md |
-| T-018 | Memory inspection ("what do you know about X?") | | todo | Transparent answers from memory files, not black box |
-| T-019 | Memory correction (team says "that's wrong" → update) | | todo | Corrections treated as high-confidence updates |
-| T-020 | INTENTS.md auto-update from observations | | todo | Bot updates intents as it observes events, not just human edits |
+| T-016 | MEMORY.md as structured index to topic files | Alan | done | save_memory tool auto-maintains MEMORY.md index pointing to memory/*.md |
+| T-017 | Agent-driven memory writes (learn → persist → index) | Alan | done | save_memory tool: writes memory/{topic}.md + updates MEMORY.md index atomically |
+| T-018 | Memory inspection ("what do you know about X?") | Alan | done | recall_memory tool: searches across all memory files, returns matching excerpts |
+| T-019 | Memory correction (team says "that's wrong" → update) | Alan | done | save_memory overwrites topic; recall_memory → read → correct → save_memory flow |
+| T-020 | INTENTS.md auto-update from observations | Alan | done | update_intents tool: full replacement with audit log entry |
 
 ---
 
 ## E-004: Context Assembly (The Product)
 
-**Owner:**
-**Status:** in-progress
+**Owner:** Alan
+**Status:** done
 
 Spec: this is 70% of the product. Intent-biased retrieval, audience-aware framing, token budget allocation.
 
 | ID | Task | Assignee | Status | Notes |
 |----|------|----------|--------|-------|
-| T-021 | Intent-biased retrieval | | todo | Augment search queries with keywords from INTENTS.md; query about API team also pulls billing migration if intent says they're linked |
-| T-022 | Audience-aware framing | | todo | Different framing for engineers vs execs vs team channel. Output type shapes the prompt |
-| T-023 | Token budget allocation with priority ordering | | todo | Identity > Intents > Framing > Trigger > History > Memory. Never cut identity/intents |
-| T-024 | Compressed intent summary for Tier 1 triage | | todo | ~500 token distilled version of INTENTS.md for cheap triage model |
+| T-021 | Intent-biased retrieval | Alan | done | Co-occurrence bonus when files match both query + intent terms; backtick-quoted phrase extraction; bias terms from INTENTS.md |
+| T-022 | Audience-aware framing | Alan | done | Audience enum inferred from channel name patterns (eng/exec/team/direct), shapes framing instructions |
+| T-023 | Token budget allocation with priority ordering | Alan | done | 6-tier priority: Identity/Intents/Framing/Trigger never cut, logs/memory gracefully truncated, retrieval fills remainder |
+| T-024 | Compressed intent summary for Tier 1 triage | Alan | done | compress_intents() extracts structural lines (headings, bullets) first, fills with prose, caps at ~500 tokens |
 
 ---
 
@@ -118,9 +118,9 @@ Spec: Slack is home base. Jira/Linear, Notion/Confluence, Calendar, Email, CRM f
 
 | ID | Task | Assignee | Status | Notes |
 |----|------|----------|--------|-------|
-| T-032 | Slack: channel history read (beyond current thread) | | backlog | conversations.history for broader context |
-| T-033 | Slack: DM support (send/receive) | | backlog | For approvals, onboarding, private nudges |
-| T-034 | Slack: user ID → display name resolution | | todo | Currently shows raw user IDs like U0AGMGKL19B |
+| T-032 | Slack: channel history read (beyond current thread) | Alan | done | channel_history tool using conversations.history API, user name resolution, multi-turn enabled |
+| T-033 | Slack: DM support (send/receive) | Alan | done | dm_user tool using conversations.open + chat.postMessage, enables approvals and private nudges |
+| T-034 | Slack: user ID → display name resolution | Alan | done | Cached users.info API calls, thread history shows real names |
 | T-035 | Jira/Linear integration (read tickets, create, update, comment) | | backlog | ExternalService trait |
 | T-036 | Notion/Confluence integration (read/write docs) | | backlog | |
 | T-037 | Calendar integration (schedule awareness, agenda prep) | | backlog | Read-only MVP |
@@ -159,7 +159,7 @@ Move from dogfooding to deployable.
 | T-046 | Credential isolation (never expose to agent logic) | | backlog | IronClaw pattern: injected at execution boundary |
 | T-047 | Cloud workspace (not local filesystem) | | backlog | Team agent, not personal agent — workspace is cloud-hosted |
 | T-048 | Concurrent access safety (single-writer mpsc queue) | | backlog | Per ARCHITECTURE.md: all mutations serialized through tokio::mpsc |
-| T-049 | Error recovery + reconnection logic | | todo | Socket drops, API failures, LLM timeouts — graceful handling |
+| T-049 | Error recovery + reconnection logic | Alan | done | LLM retry with exponential backoff (3 attempts), Slack API retry on rate limits/transient errors, 5-min event handler timeout, Socket Mode reconnect already in place |
 | T-050 | Structured logging + observability | | backlog | Tracing spans, token usage tracking, cost dashboards |
 
 ---
@@ -176,7 +176,7 @@ Move from dogfooding to deployable.
 | T-053 | Test cross-channel posting | | todo | |
 | T-054 | Stress test with real conversations | | todo | |
 | T-055 | IDENTITY.md refinement from dogfooding feedback | | todo | |
-| T-056 | Kill hallucinated capabilities (ongoing) | | in-progress | SKILLS.md registry approach |
+| T-056 | Kill hallucinated capabilities (ongoing) | Alan | done | SKILLS.md registry loaded into context, explicit "I can't do that yet" instruction in system prompt |
 
 ---
 

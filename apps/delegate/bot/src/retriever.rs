@@ -72,7 +72,8 @@ pub async fn retrieve(
             .replace('\\', "/");
 
         let mut matches = Vec::new();
-        let mut total_score = 0.0;
+        let mut query_score = 0.0;
+        let mut bias_score = 0.0;
 
         for (i, line) in lines.iter().enumerate() {
             let mut line_score = 0.0;
@@ -80,7 +81,13 @@ pub async fn retrieve(
             for (re, is_bias) in &compiled_terms {
                 let match_count = re.find_iter(line).count();
                 if match_count > 0 {
-                    line_score += match_count as f64 * if *is_bias { 0.5 } else { 1.0 };
+                    let points = match_count as f64 * if *is_bias { 0.5 } else { 1.0 };
+                    line_score += points;
+                    if *is_bias {
+                        bias_score += points;
+                    } else {
+                        query_score += points;
+                    }
                 }
             }
 
@@ -94,11 +101,22 @@ pub async fn retrieve(
                     content: line.to_string(),
                     context,
                 });
-                total_score += line_score;
             }
         }
 
         if !matches.is_empty() {
+            // Co-occurrence bonus: files matching BOTH query and intent terms
+            // rank higher than files matching only one. This is the core of
+            // intent-biased retrieval — "API team" query + "billing migration"
+            // intent means a file mentioning both gets boosted.
+            let base_score = query_score + bias_score;
+            let co_occurrence_bonus = if query_score > 0.0 && bias_score > 0.0 {
+                (query_score.min(bias_score)) * 0.5
+            } else {
+                0.0
+            };
+            let total_score = base_score + co_occurrence_bonus;
+
             let deduped = deduplicate_matches(matches, context_lines);
             results.push(RetrievalResult {
                 file: file.clone(),
