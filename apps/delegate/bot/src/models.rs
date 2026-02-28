@@ -803,6 +803,35 @@ pub fn delegate_tools() -> Vec<Value> {
                     "required": ["content", "reason"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "log_decision",
+                "description": "Capture a decision that was made in a conversation. Use this when you observe a team decision: someone chose an approach, approved a plan, settled a debate, or set a direction. This creates a permanent record in memory/decisions.md with the decision, reasoning, participants, and date.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "decision": {
+                            "type": "string",
+                            "description": "What was decided (e.g. 'Use PostgreSQL for the new service instead of DynamoDB')"
+                        },
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Why it was decided — the key arguments or constraints"
+                        },
+                        "participants": {
+                            "type": "string",
+                            "description": "Who was involved in making this decision (names or user IDs)"
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "Where the decision was made (channel, thread topic)"
+                        }
+                    },
+                    "required": ["decision", "reasoning", "participants"]
+                }
+            }
         }
     ])
     .as_array()

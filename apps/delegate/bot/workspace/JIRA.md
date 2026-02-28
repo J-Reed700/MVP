@@ -80,16 +80,16 @@ Spec: this is 70% of the product. Intent-biased retrieval, audience-aware framin
 
 ## E-005: Autonomy Model
 
-**Owner:**
-**Status:** backlog
+**Owner:** Alan
+**Status:** in-progress
 
 Spec: three tiers — always autonomous, autonomous with notice, requires human approval.
 
 | ID | Task | Assignee | Status | Notes |
 |----|------|----------|--------|-------|
-| T-025 | Action tier classification on tool calls | | backlog | Tag each action as autonomous / notice / approval-required |
-| T-026 | Approval workflow via Slack DM | | backlog | Propose → DM approver → react to approve/reject → timeout → escalate |
-| T-027 | pending/ audit trail for approval actions | | backlog | Write proposed action to pending/{timestamp}-{slug}.md, never delete |
+| T-025 | Action tier classification on tool calls | Alan | done | classify_action() maps each tool to Autonomous/AutonomousWithNotice/RequiresApproval |
+| T-026 | Approval workflow via Slack DM | | todo | Propose → DM approver → react to approve/reject → timeout → escalate |
+| T-027 | pending/ audit trail for approval actions | Alan | done | write_pending_action() writes to pending/{timestamp}-{slug}.md, never deleted |
 | T-028 | Configurable tier overrides per team | | backlog | Team can move any action between tiers |
 
 ---
@@ -142,7 +142,7 @@ Spec: "It acts before being asked." These are the behaviors that make Delegate f
 | T-041 | Blocker detection and escalation | | backlog | Cross-reference signals: someone says "blocked" + intent says it's critical path |
 | T-042 | Cross-thread connection ("this relates to...") | | backlog | Notice when a conversation in one channel is relevant to another |
 | T-043 | Stakeholder update drafts (weekly, requires approval) | | backlog | Audience-aware: execs get outcomes/risks, engineers get specifics |
-| T-044 | Decision log maintenance | | backlog | When a decision is made in a thread, capture it to memory with reasoning and participants |
+| T-044 | Decision log maintenance | Alan | done | log_decision tool captures decisions to memory/decisions.md with reasoning, participants, date, auto-updates MEMORY.md index |
 
 ---
 
@@ -160,7 +160,7 @@ Move from dogfooding to deployable.
 | T-047 | Cloud workspace (not local filesystem) | | backlog | Team agent, not personal agent — workspace is cloud-hosted |
 | T-048 | Concurrent access safety (single-writer mpsc queue) | | backlog | Per ARCHITECTURE.md: all mutations serialized through tokio::mpsc |
 | T-049 | Error recovery + reconnection logic | Alan | done | LLM retry with exponential backoff (3 attempts), Slack API retry on rate limits/transient errors, 5-min event handler timeout, Socket Mode reconnect already in place |
-| T-050 | Structured logging + observability | | backlog | Tracing spans, token usage tracking, cost dashboards |
+| T-050 | Structured logging + observability | Alan | done | #[instrument] spans on handle_event/execute_tool, per-event token tracking, duration metrics, span fields for total_tokens/tool_count |
 
 ---
 

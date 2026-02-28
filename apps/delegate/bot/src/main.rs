@@ -24,6 +24,34 @@ use workspace::Workspace;
 
 const MAX_TOOL_TURNS: usize = 5;
 
+/// Action autonomy tiers per the spec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActionTier {
+    /// Execute immediately, no notification needed.
+    Autonomous,
+    /// Execute immediately, but log/notify that it happened.
+    AutonomousWithNotice,
+    /// Write to pending/ audit trail before executing. (For now, treated as notice.)
+    RequiresApproval,
+}
+
+/// Classify a tool call into an action tier.
+fn classify_action(tool_name: &str) -> ActionTier {
+    match tool_name {
+        // Read-only operations: always autonomous
+        "react" | "no_action" | "read_file" | "recall_memory" | "channel_history" => {
+            ActionTier::Autonomous
+        }
+        // Visible actions: autonomous with notice
+        "reply" | "post" | "save_memory" | "log_decision" => ActionTier::AutonomousWithNotice,
+        // Higher-impact actions: approval-required (notice for now during dogfooding)
+        "dm_user" | "update_intents" | "create_skill" | "write_file" => {
+            ActionTier::RequiresApproval
+        }
+        _ => ActionTier::AutonomousWithNotice,
+    }
+}
+
 /// Shared daily token budget tracker.
 /// Tracks total tokens used today. Resets at midnight.
 #[derive(Clone)]
@@ -274,6 +302,16 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(
+    skip(slack, client, ws, budget),
+    fields(
+        channel = %event.channel,
+        user = %event.user,
+        event_type = %event.event_type,
+        total_tokens = tracing::field::Empty,
+        tool_count = tracing::field::Empty,
+    )
+)]
 async fn handle_event(
     event: DelegateEvent,
     slack: &SlackSocket,
@@ -283,6 +321,9 @@ async fn handle_event(
     model_override: Option<&str>,
     budget: &TokenBudget,
 ) -> Result<()> {
+    let event_start = std::time::Instant::now();
+    let mut event_tokens: u64 = 0;
+
     // --- Tier 0 triage ---
     if let Some(label) = triage::tier0_classify(&event, bot_user_id) {
         match label {
@@ -442,6 +483,7 @@ async fn handle_event(
     );
 
     // Record token usage
+    event_tokens += response.input_tokens + response.output_tokens;
     let within_budget =
         budget.record(response.input_tokens + response.output_tokens).await;
     if !within_budget && !budget.was_notified().await {
@@ -479,8 +521,14 @@ async fn handle_event(
         let mut needs_followup = false;
 
         for call in &current_response.tool_calls {
-            info!(tool = %call.name, "Executing tool call");
+            let tier = classify_action(&call.name);
+            info!(tool = %call.name, tier = ?tier, "Executing tool call");
             all_actions.push(call.name.clone());
+
+            // Audit trail for approval-required actions
+            if tier == ActionTier::RequiresApproval {
+                let _ = write_pending_action(ws, call, &event).await;
+            }
 
             let result = execute_tool(call, slack, ws, &event, thread_ts).await;
 
@@ -523,9 +571,13 @@ async fn handle_event(
             })
             .await?;
 
+        event_tokens += next_response.input_tokens + next_response.output_tokens;
+        budget.record(next_response.input_tokens + next_response.output_tokens).await;
+
         info!(
             tool_calls = next_response.tool_calls.len(),
             content_len = next_response.content.len(),
+            tokens = next_response.input_tokens + next_response.output_tokens,
             "Multi-turn response received"
         );
 
@@ -553,10 +605,23 @@ async fn handle_event(
         .await?;
     }
 
+    // Record span fields for structured logging
+    let span = tracing::Span::current();
+    span.record("total_tokens", event_tokens);
+    span.record("tool_count", all_actions.len());
+
+    info!(
+        duration_ms = event_start.elapsed().as_millis() as u64,
+        tokens = event_tokens,
+        actions = all_actions.len(),
+        "Event handling complete"
+    );
+
     Ok(())
 }
 
 /// Execute a single tool call and return a result string for multi-turn.
+#[tracing::instrument(skip(slack, ws, event), fields(tool = %call.name))]
 async fn execute_tool(
     call: &ToolCall,
     slack: &SlackSocket,
@@ -851,6 +916,60 @@ async fn execute_tool(
                 results.join("\n\n---\n\n")
             }
         }
+        "log_decision" => {
+            let decision = call.arguments["decision"].as_str().unwrap_or("");
+            let reasoning = call.arguments["reasoning"].as_str().unwrap_or("");
+            let participants = call.arguments["participants"].as_str().unwrap_or("");
+            let context = call.arguments["context"].as_str().unwrap_or("unknown");
+            if decision.is_empty() {
+                return "No decision provided".to_string();
+            }
+
+            let decisions_path = ws.path().join("memory").join("decisions.md");
+            let _ = tokio::fs::create_dir_all(ws.path().join("memory")).await;
+
+            let existing = tokio::fs::read_to_string(&decisions_path)
+                .await
+                .unwrap_or_else(|_| "# Decision Log\n\nDecisions captured from team conversations.\n".to_string());
+
+            let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let new_entry = format!(
+                "\n---\n\n### {} ({})\n\n\
+                 **Decision:** {}\n\
+                 **Reasoning:** {}\n\
+                 **Participants:** {}\n\
+                 **Context:** {}\n",
+                decision.chars().take(60).collect::<String>(),
+                date,
+                decision,
+                reasoning,
+                participants,
+                context,
+            );
+
+            let updated = format!("{}{}", existing.trim_end(), new_entry);
+            match tokio::fs::write(&decisions_path, &updated).await {
+                Ok(_) => {
+                    info!(decision = %decision, "Logged decision");
+
+                    // Also update MEMORY.md index if decisions.md isn't already listed
+                    let memory_index_path = ws.path().join("MEMORY.md");
+                    let index = tokio::fs::read_to_string(&memory_index_path)
+                        .await
+                        .unwrap_or_default();
+                    if !index.contains("memory/decisions.md") {
+                        let updated_index = format!(
+                            "{}\n- [decisions](memory/decisions.md) — Team decisions captured from conversations",
+                            index.trim_end()
+                        );
+                        let _ = tokio::fs::write(&memory_index_path, &updated_index).await;
+                    }
+
+                    format!("Decision logged: {}", &decision[..decision.len().min(80)])
+                }
+                Err(e) => format!("Failed to log decision: {e}"),
+            }
+        }
         "update_intents" => {
             let content = call.arguments["content"].as_str().unwrap_or("");
             let reason = call.arguments["reason"].as_str().unwrap_or("no reason given");
@@ -881,6 +1000,46 @@ async fn execute_tool(
             format!("Unknown tool: {other}")
         }
     }
+}
+
+/// Write a proposed action to the pending/ audit trail.
+/// Per ARCHITECTURE.md: file is never deleted — permanent record of what was proposed.
+async fn write_pending_action(
+    ws: &Workspace,
+    call: &ToolCall,
+    event: &DelegateEvent,
+) -> Result<()> {
+    let pending_dir = ws.path().join("pending");
+    tokio::fs::create_dir_all(&pending_dir).await?;
+
+    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let slug = call.name.replace('_', "-");
+    let filename = format!("{timestamp}-{slug}.md");
+
+    let content = format!(
+        "# Pending Action: {}\n\n\
+         **Time:** {}\n\
+         **Tool:** {}\n\
+         **Trigger channel:** {}\n\
+         **Trigger user:** {}\n\
+         **Trigger content:** {}\n\n\
+         ## Arguments\n\n\
+         ```json\n{}\n```\n\n\
+         ## Status\n\n\
+         Executed (dogfooding mode — approval workflow not yet active)\n",
+        call.name,
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+        call.name,
+        event.channel,
+        event.user,
+        event.content,
+        serde_json::to_string_pretty(&call.arguments).unwrap_or_default(),
+    );
+
+    tokio::fs::write(pending_dir.join(&filename), &content).await?;
+    info!(file = %filename, tool = %call.name, "Wrote pending action audit trail");
+
+    Ok(())
 }
 
 /// Background heartbeat loop.
