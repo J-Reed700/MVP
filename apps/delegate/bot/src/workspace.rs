@@ -8,6 +8,7 @@ pub struct Workspace {
     pub root: PathBuf,
 }
 
+#[allow(dead_code)]
 impl Workspace {
     pub fn new(path: &str) -> Self {
         Self {

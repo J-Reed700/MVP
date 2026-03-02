@@ -1,171 +1,86 @@
+mod approval;
+mod budget;
 mod context;
 mod event;
 mod heartbeat;
 mod logger;
+mod messenger;
 mod models;
 mod retriever;
 mod slack;
+mod text;
+mod tool_loop;
+mod tools;
 mod triage;
 mod workspace;
 
 use anyhow::{anyhow, Result};
+use chrono::Datelike;
 use serde_json::Value;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
+use budget::TokenBudget;
 use context::TaskType;
 use event::DelegateEvent;
-use models::{delegate_tools, ChatOptions, CompleteOptions, ModelClient, ToolCall};
+use messenger::{Messenger, Transport};
+use models::{delegate_tools, ChatOptions, CompleteOptions, ModelClient};
 use slack::SlackSocket;
+use tool_loop::ToolLoopConfig;
+use tools::{classify_action, is_information_tool, is_reply_tool, summarize_action, ActionTier, ToolContext};
 use triage::TriageLabel;
 use workspace::Workspace;
 
 const MAX_TOOL_TURNS: usize = 5;
 
-/// Action autonomy tiers per the spec.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ActionTier {
-    /// Execute immediately, no notification needed.
-    Autonomous,
-    /// Execute immediately, but log/notify that it happened.
-    AutonomousWithNotice,
-    /// Write to pending/ audit trail before executing. (For now, treated as notice.)
-    RequiresApproval,
-}
-
-/// Classify a tool call into an action tier.
-fn classify_action(tool_name: &str) -> ActionTier {
-    match tool_name {
-        // Read-only operations: always autonomous
-        "react" | "no_action" | "read_file" | "recall_memory" | "channel_history" => {
-            ActionTier::Autonomous
-        }
-        // Visible actions: autonomous with notice
-        "reply" | "post" | "save_memory" | "log_decision" => ActionTier::AutonomousWithNotice,
-        // Higher-impact actions: approval-required (notice for now during dogfooding)
-        "dm_user" | "update_intents" | "create_skill" | "write_file" => {
-            ActionTier::RequiresApproval
-        }
-        _ => ActionTier::AutonomousWithNotice,
-    }
-}
-
-/// Shared daily token budget tracker.
-/// Tracks total tokens used today. Resets at midnight.
-#[derive(Clone)]
-struct TokenBudget {
-    inner: Arc<Mutex<TokenBudgetInner>>,
-}
-
-struct TokenBudgetInner {
-    used: u64,
-    limit: u64,
-    date: String,
-    notified: bool,
-}
-
-impl TokenBudget {
-    fn new(limit: u64) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(TokenBudgetInner {
-                used: 0,
-                limit,
-                date: chrono::Local::now().format("%Y-%m-%d").to_string(),
-                notified: false,
-            })),
-        }
-    }
-
-    /// Record token usage. Returns true if still within budget.
-    async fn record(&self, tokens: u64) -> bool {
-        let mut inner = self.inner.lock().await;
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-
-        // Reset at midnight
-        if inner.date != today {
-            info!(
-                prev_date = %inner.date,
-                used = inner.used,
-                "Token budget reset for new day"
-            );
-            inner.used = 0;
-            inner.date = today;
-            inner.notified = false;
-        }
-
-        inner.used += tokens;
-        inner.used <= inner.limit
-    }
-
-    /// Check if we're within budget without recording.
-    async fn is_available(&self) -> bool {
-        let mut inner = self.inner.lock().await;
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-
-        if inner.date != today {
-            inner.used = 0;
-            inner.date = today;
-            inner.notified = false;
-        }
-
-        inner.used < inner.limit
-    }
-
-    /// Mark that we've notified the team about budget exhaustion.
-    async fn mark_notified(&self) {
-        self.inner.lock().await.notified = true;
-    }
-
-    /// Check if team has been notified already.
-    async fn was_notified(&self) -> bool {
-        self.inner.lock().await.notified
-    }
-
-    /// Update the limit (e.g., from HEARTBEAT.md reload).
-    async fn set_limit(&self, limit: u64) {
-        self.inner.lock().await.limit = limit;
-    }
-
-    /// Get current usage stats.
-    async fn stats(&self) -> (u64, u64) {
-        let inner = self.inner.lock().await;
-        (inner.used, inner.limit)
-    }
-}
+type ValidateId = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 struct Config {
-    slack_app_token: String,
-    slack_bot_token: String,
+    transport: String,
     provider: String,
     model: Option<String>,
     workspace_path: String,
-    bot_user_id: String,
 }
 
 impl Config {
     fn from_env() -> Result<Self> {
-        let slack_app_token = std::env::var("SLACK_APP_TOKEN")
-            .map_err(|_| anyhow!("SLACK_APP_TOKEN not set (xapp-... token)"))?;
-        let slack_bot_token = std::env::var("SLACK_BOT_TOKEN")
-            .map_err(|_| anyhow!("SLACK_BOT_TOKEN not set (xoxb-... token)"))?;
+        let transport =
+            std::env::var("DELEGATE_TRANSPORT").unwrap_or_else(|_| "slack".to_string());
         let provider =
             std::env::var("DELEGATE_PROVIDER").unwrap_or_else(|_| "anthropic".to_string());
         let model = std::env::var("DELEGATE_MODEL").ok();
         let workspace_path =
             std::env::var("DELEGATE_WORKSPACE").unwrap_or_else(|_| "./workspace".to_string());
-        let bot_user_id =
-            std::env::var("SLACK_BOT_USER_ID").unwrap_or_else(|_| String::new());
 
         Ok(Self {
-            slack_app_token,
-            slack_bot_token,
+            transport,
             provider,
             model,
             workspace_path,
-            bot_user_id,
         })
+    }
+}
+
+/// Build transport and messenger from the configured transport name.
+/// Each transport reads its own env vars inside the factory match arm.
+/// Returns (Transport, Messenger) — both Arcs from the same concrete instance.
+fn build_transport(name: &str) -> Result<(Arc<dyn Transport>, Arc<dyn Messenger>)> {
+    match name {
+        "slack" => {
+            let app_token = std::env::var("SLACK_APP_TOKEN")
+                .map_err(|_| anyhow!("SLACK_APP_TOKEN not set (xapp-... token)"))?;
+            let bot_token = std::env::var("SLACK_BOT_TOKEN")
+                .map_err(|_| anyhow!("SLACK_BOT_TOKEN not set (xoxb-... token)"))?;
+            let bot_user_id = std::env::var("SLACK_BOT_USER_ID")
+                .map_err(|_| anyhow!("SLACK_BOT_USER_ID not set — required to prevent self-reply loops"))?;
+            let slack = SlackSocket::new(app_token, bot_token, bot_user_id);
+            let transport: Arc<dyn Transport> = Arc::new(slack.clone());
+            let messenger: Arc<dyn Messenger> = Arc::new(slack);
+            Ok((transport, messenger))
+        }
+        other => Err(anyhow!("Unknown transport: {other}. Supported: slack")),
     }
 }
 
@@ -178,48 +93,61 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    dotenvy::dotenv().ok();
     info!("Delegate Bot starting...");
 
     let config = Config::from_env()?;
     let ws = Workspace::new(&config.workspace_path);
     let model_client = ModelClient::new(&config.provider)?;
 
-    // Parse initial config for daily budget
-    let hb_config = heartbeat::parse_config(ws.path()).await;
+    let (transport, messenger) = build_transport(&config.transport)?;
+
+    let hb_config = heartbeat::parse_config(ws.path(), &|id| transport.is_valid_user_id(id)).await;
     let token_budget = TokenBudget::new(hb_config.daily_token_budget);
+
+    // Resolve watched channel names → IDs for Tier 0 filtering
+    let watched_channels = resolve_watched_channels(&ws, &*messenger).await;
+    let watched_channels = Arc::new(watched_channels);
+
+    // Resolve notification channel ID at startup
+    let notification_channel: Arc<Option<String>> =
+        if let Some(ref ch_name) = hb_config.notification_channel {
+            Arc::new(messenger.resolve_channel_id(ch_name).await)
+        } else {
+            Arc::new(None)
+        };
 
     info!(
         daily_budget = hb_config.daily_token_budget,
-        "Listening to all channels the bot is invited to"
+        "Listening for events..."
     );
 
-    let (event_tx, mut event_rx) = mpsc::channel::<serde_json::Value>(100);
+    let (event_tx, mut event_rx) = mpsc::channel::<Value>(100);
 
-    // Single shared SlackSocket — user name cache persists across all event handlers
-    let slack = SlackSocket::new(
-        config.slack_app_token.clone(),
-        config.slack_bot_token.clone(),
-    );
-
-    let slack_handle = {
-        let slack_for_listener = slack.clone();
+    let listener_handle = {
+        let transport_for_listener = transport.clone();
         tokio::spawn(async move {
-            if let Err(e) = slack_for_listener.run(event_tx).await {
-                error!("Socket Mode listener failed: {e}");
+            if let Err(e) = transport_for_listener.listen(event_tx).await {
+                error!("Transport listener failed: {e}");
             }
         })
     };
 
-    // Spawn heartbeat loop
+    let validate_id: ValidateId = {
+        let t = transport.clone();
+        Arc::new(move |id: &str| t.is_valid_user_id(id))
+    };
+
     let heartbeat_handle = {
-        let hb_slack = slack.clone();
+        let hb_messenger = messenger.clone();
         let hb_client = model_client.clone();
         let hb_ws = ws.clone();
         let hb_model = config.model.clone();
         let hb_budget = token_budget.clone();
+        let hb_validate = validate_id.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                run_heartbeat(&hb_ws, &hb_client, &hb_slack, hb_model.as_deref(), &hb_budget)
+                run_heartbeat(&hb_ws, &hb_client, &*hb_messenger, hb_model.as_deref(), &hb_budget, &hb_validate)
                     .await
             {
                 error!("Heartbeat loop failed: {e}");
@@ -227,25 +155,41 @@ async fn main() -> Result<()> {
         })
     };
 
-    info!("Event loop running. Waiting for Slack events...");
+    let cron_handle = {
+        let cron_messenger = messenger.clone();
+        let cron_client = model_client.clone();
+        let cron_ws = ws.clone();
+        let cron_model = config.model.clone();
+        let cron_budget = token_budget.clone();
+        let cron_validate = validate_id.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                run_cron_scheduler(&cron_ws, &cron_client, &*cron_messenger, cron_model.as_deref(), &cron_budget, &cron_validate)
+                    .await
+            {
+                error!("Cron scheduler failed: {e}");
+            }
+        })
+    };
 
-    // Dedup cache: track recently processed (channel, timestamp) pairs
+    info!("Event loop running. Waiting for events...");
+
+    // Dedup cache
     let seen_events: Arc<Mutex<(HashSet<String>, VecDeque<String>)>> =
         Arc::new(Mutex::new((HashSet::new(), VecDeque::new())));
     const DEDUP_CACHE_SIZE: usize = 200;
 
     while let Some(envelope) = event_rx.recv().await {
-        let evt = match event::normalize(&envelope) {
+        let evt = match transport.normalize_event(&envelope) {
             Some(e) => e,
             None => continue,
         };
 
-        // Dedup: skip if we've already processed this (channel, ts) pair
+        // Dedup
         let dedup_key = format!("{}:{}", evt.channel, evt.timestamp);
         {
             let mut cache = seen_events.lock().await;
             if cache.0.contains(&dedup_key) {
-                info!(event_type = %evt.event_type, "Skipping duplicate event");
                 continue;
             }
             cache.0.insert(dedup_key.clone());
@@ -264,24 +208,28 @@ async fn main() -> Result<()> {
             "Received event"
         );
 
-        let slack_for_event = slack.clone();
+        let transport_for_event = transport.clone();
+        let messenger_for_event = messenger.clone();
         let client = model_client.clone();
         let ws_clone = ws.clone();
-        let bot_user_id = config.bot_user_id.clone();
         let model_override = config.model.clone();
         let evt_budget = token_budget.clone();
+        let evt_watched = watched_channels.clone();
+        let evt_notif_channel = notification_channel.clone();
 
         tokio::spawn(async move {
             let result = tokio::time::timeout(
-                std::time::Duration::from_secs(300), // 5-minute timeout per event
+                std::time::Duration::from_secs(300),
                 handle_event(
                     evt,
-                    &slack_for_event,
+                    &*transport_for_event,
+                    &*messenger_for_event,
                     &client,
                     &ws_clone,
-                    &bot_user_id,
                     model_override.as_deref(),
                     &evt_budget,
+                    evt_watched.as_ref().as_ref(),
+                    evt_notif_channel.as_ref().as_deref(),
                 ),
             )
             .await;
@@ -294,16 +242,69 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Both loops run until the process exits
     tokio::select! {
-        r = slack_handle => { r?; }
+        r = listener_handle => { r?; }
         r = heartbeat_handle => { r?; }
+        r = cron_handle => { r?; }
     }
     Ok(())
 }
 
+/// Resolve watched channel names from HEARTBEAT.md to channel IDs.
+async fn resolve_watched_channels(
+    ws: &Workspace,
+    messenger: &dyn Messenger,
+) -> Option<HashSet<String>> {
+    let names = ws.watched_channels().await;
+    if names.is_empty() {
+        return None;
+    }
+    let mut ids = HashSet::new();
+    for name in &names {
+        if let Some(id) = messenger.resolve_channel_id(name).await {
+            ids.insert(id);
+        } else {
+            warn!(channel = %name, "Could not resolve watched channel name to ID");
+        }
+    }
+    if ids.is_empty() {
+        None
+    } else {
+        info!(channels = ?ids, "Watching specific channels");
+        Some(ids)
+    }
+}
+
+/// Notify that the daily token budget has been exhausted.
+async fn notify_budget_exhausted(
+    messenger: &dyn Messenger,
+    budget: &TokenBudget,
+    fallback_channel: &str,
+    notification_channel: Option<&str>,
+    ws: &Workspace,
+) {
+    if budget.was_notified().await {
+        return;
+    }
+    warn!("Daily token budget exhausted, entering log-only mode");
+    let msg = "I've used my daily token budget. Entering log-only mode until midnight.";
+    let channel = notification_channel.unwrap_or(fallback_channel);
+    let _ = messenger.post_message(channel, msg, None).await;
+    logger::append_log(
+        ws.path(),
+        "internal",
+        "delegate-bot",
+        "[budget-exhausted] Entering log-only mode until midnight",
+    )
+    .await
+    .ok();
+    budget.mark_notified().await;
+}
+
+// ── Event handler ──────────────────────────────────────────────────────
+
 #[tracing::instrument(
-    skip(slack, client, ws, budget),
+    skip(transport, messenger, client, ws, budget, watched_channels, notification_channel),
     fields(
         channel = %event.channel,
         user = %event.user,
@@ -314,154 +315,66 @@ async fn main() -> Result<()> {
 )]
 async fn handle_event(
     event: DelegateEvent,
-    slack: &SlackSocket,
+    transport: &dyn Transport,
+    messenger: &dyn Messenger,
     client: &ModelClient,
     ws: &Workspace,
-    bot_user_id: &str,
     model_override: Option<&str>,
     budget: &TokenBudget,
+    watched_channels: Option<&HashSet<String>>,
+    notification_channel: Option<&str>,
 ) -> Result<()> {
     let event_start = std::time::Instant::now();
     let mut event_tokens: u64 = 0;
 
-    // --- Tier 0 triage ---
-    if let Some(label) = triage::tier0_classify(&event, bot_user_id) {
-        match label {
-            TriageLabel::Ignore => {
-                info!(reason = "tier0", "Ignoring event");
-                return Ok(());
-            }
-            TriageLabel::ActNow => {
-                // app_mention — fall through to full processing
-            }
-            TriageLabel::Queue => {
-                logger::append_log(
-                    ws.path(),
-                    &event.channel,
-                    &event.user,
-                    &format!("[queued] {}", event.content),
-                )
-                .await?;
-                info!(reason = "tier0-queue", "Queued event");
-                return Ok(());
-            }
-        }
-    } else {
-        // --- Budget check for Tier 1 triage ---
-        if !budget.is_available().await {
-            // Log-only mode: skip LLM triage, just log
-            logger::append_log(
-                ws.path(),
-                &event.channel,
-                &event.user,
-                &format!("[log-only] {}", event.content),
-            )
-            .await?;
-            return Ok(());
-        }
-
-        // --- Tier 1 triage (LLM-based) ---
-        let raw_intents = ws.intents().await;
-        let intent_summary = context::compress_intents(&raw_intents, 500);
-        let (label, reasoning) =
-            triage::tier1_classify(&event, &intent_summary, client, None).await?;
-
-        // Record triage tokens
-        budget.record(200).await; // Tier 1 uses ~100-200 tokens
-
-        info!(label = %label, reasoning = %reasoning, "Tier 1 triage result");
-
-        match label {
-            TriageLabel::Ignore => {
-                logger::append_log(ws.path(), &event.channel, &event.user, &event.content)
-                    .await?;
-                return Ok(());
-            }
-            TriageLabel::Queue => {
-                logger::append_log(
-                    ws.path(),
-                    &event.channel,
-                    &event.user,
-                    &format!("[queued] {}", event.content),
-                )
-                .await?;
-                return Ok(());
-            }
-            TriageLabel::ActNow => {}
-        }
-    }
-
-    // --- Budget check for full reasoning ---
-    if !budget.is_available().await {
-        logger::append_log(
-            ws.path(),
-            &event.channel,
-            &event.user,
-            &format!("[log-only] {}", event.content),
-        )
-        .await?;
-        info!("Token budget exhausted, logging only");
+    // Fast-path: approval reactions
+    if event.event_type == "reaction_added" {
+        approval::handle_reaction(&event, messenger, ws).await?;
         return Ok(());
     }
 
-    // --- Full context assembly + tool-use LLM call ---
-    info!("Processing act-now event, assembling context...");
+    // Triage
+    let triage_tokens = run_triage(&event, transport, watched_channels, ws, budget, client).await?;
+    if triage_tokens.is_none() {
+        return Ok(()); // event was filtered out
+    }
+    event_tokens += triage_tokens.unwrap();
 
+    // Budget check for full reasoning
+    if !budget.is_available().await {
+        logger::append_log(ws.path(), &event.channel, &event.user, &format!("[log-only] {}", event.content)).await?;
+        notify_budget_exhausted(messenger, budget, &event.channel, notification_channel, ws).await;
+        return Ok(());
+    }
+
+    // Assemble context
     let thread_ts = event.thread_ts.as_deref().unwrap_or(&event.timestamp);
-
-    // Resolve user display name
-    let user_name = slack.get_user_name(&event.user).await;
-
-    // Fetch thread context if this message is part of a thread
-    let thread_context = if event.thread_ts.is_some() {
-        let messages = slack.get_thread(&event.channel, thread_ts).await?;
-        let mut lines = Vec::new();
-        for msg in &messages {
-            let uid = msg["user"].as_str().unwrap_or("unknown");
-            let name = slack.get_user_name(uid).await;
-            let text = msg["text"].as_str().unwrap_or("");
-            let ts = msg["ts"].as_str().unwrap_or("");
-            if ts != event.timestamp {
-                lines.push(format!("<{name}> {text}"));
-            }
-        }
-        if lines.is_empty() {
-            String::new()
-        } else {
-            format!("Thread history (oldest first):\n{}", lines.join("\n"))
-        }
-    } else {
-        String::new()
-    };
-
+    let user_name = messenger.get_user_name(&event.user).await;
+    let thread_context = fetch_thread_context(&event, messenger, thread_ts).await;
+    let channel_name = messenger.get_channel_name(&event.channel).await;
     let recent_logs = logger::read_recent_logs(ws.path()).await;
 
-    let mut compiled =
-        context::compile(&event, ws.path(), TaskType::Respond, &recent_logs, 8000).await?;
+    let is_dm = transport.is_dm_channel(&event.channel);
+    let mut compiled = context::compile(
+        &event, ws.path(), TaskType::Respond, &recent_logs, 8000, Some(&channel_name), is_dm,
+    ).await?;
 
-    // Override trigger with resolved display name instead of raw user ID
+    let clean_content = transport.strip_mentions(&event.content);
+
     compiled.trigger = format!(
-        "Channel: {}\nFrom: {}\nTime: {}\n\n{}",
-        event.channel, user_name, event.timestamp, event.content
+        "Channel: #{channel_name}\nFrom: {user_name} (ID: {})\nTime: {}\n\n{clean_content}",
+        event.user, event.timestamp
     );
 
     let (system_prompt, mut user_prompt) = context::to_prompt(&compiled);
-
-    // Prepend thread context to user prompt so the model sees the full conversation
     if !thread_context.is_empty() {
         user_prompt = format!("{thread_context}\n\n---\nNew message:\n{user_prompt}");
     }
 
-    info!(
-        system_len = system_prompt.len(),
-        user_len = user_prompt.len(),
-        "Calling LLM with tools..."
-    );
-
+    // Initial LLM call
     let tools = delegate_tools();
     let model = model_override.map(|s| s.to_string());
 
-    // First call uses single-shot complete
     let response = client
         .complete(CompleteOptions {
             system: system_prompt.clone(),
@@ -473,43 +386,173 @@ async fn handle_event(
         })
         .await?;
 
-    info!(
-        model = %response.model,
-        input_tokens = response.input_tokens,
-        output_tokens = response.output_tokens,
-        duration_ms = response.duration_ms,
-        tool_calls = response.tool_calls.len(),
-        "LLM response received"
-    );
-
-    // Record token usage
     event_tokens += response.input_tokens + response.output_tokens;
-    let within_budget =
-        budget.record(response.input_tokens + response.output_tokens).await;
-    if !within_budget && !budget.was_notified().await {
-        // Notify team about budget exhaustion
-        warn!("Daily token budget exhausted");
-        let _ = slack
-            .post_message(
-                &event.channel,
-                "Daily token budget exhausted. Entering log-only mode until midnight. \
-                 I'll keep logging events but won't respond until the budget resets.",
-                None,
-            )
-            .await;
-        budget.mark_notified().await;
+    let within_budget = budget.record(response.input_tokens + response.output_tokens).await;
+    if !within_budget {
+        notify_budget_exhausted(messenger, budget, &event.channel, notification_channel, ws).await;
     }
 
-    let mut all_actions = Vec::new();
-    let mut has_reply = false;
-    let mut final_content = response.content.clone();
+    // Multi-turn tool loop with approval workflow
+    let hb_config = heartbeat::parse_config(ws.path(), &|id| transport.is_valid_user_id(id)).await;
+    let ctx = ToolContext { messenger, ws, event: &event, thread_ts };
 
-    // Execute tools and potentially loop for multi-turn.
-    // Accumulate full message history so the model sees all prior tool exchanges.
+    let (final_content, has_reply, action_summaries, silent_actions, loop_tokens) =
+        run_event_tool_loop(
+            response,
+            &user_prompt,
+            &system_prompt,
+            &model,
+            &tools,
+            client,
+            &ctx,
+            budget,
+            &hb_config,
+        )
+        .await;
+
+    event_tokens += loop_tokens;
+
+    // Post text content if model didn't use reply tool
+    if !final_content.is_empty() && !has_reply {
+        messenger.post_message(&event.channel, &final_content, Some(thread_ts)).await?;
+    }
+
+    // Post italic notice for silent tool executions
+    if !silent_actions.is_empty() && !has_reply {
+        let notice = format!("_{}_", silent_actions.join("; "));
+        let _ = messenger.post_message(&event.channel, &notice, Some(thread_ts)).await;
+    }
+
+    // Log the interaction
+    logger::append_log(ws.path(), &channel_name, &user_name, &clean_content).await?;
+    if !action_summaries.is_empty() {
+        logger::append_log(
+            ws.path(),
+            &channel_name,
+            "delegate-bot",
+            &format!("[{}]", action_summaries.join("; ")),
+        )
+        .await?;
+    }
+
+    let span = tracing::Span::current();
+    span.record("total_tokens", event_tokens);
+    span.record("tool_count", action_summaries.len());
+
+    info!(
+        duration_ms = event_start.elapsed().as_millis() as u64,
+        tokens = event_tokens,
+        "Event handling complete"
+    );
+
+    Ok(())
+}
+
+/// Run triage (Tier 0 + Tier 1). Returns Some(tokens_used) if event should be processed,
+/// None if filtered out.
+async fn run_triage(
+    event: &DelegateEvent,
+    transport: &dyn Transport,
+    watched_channels: Option<&HashSet<String>>,
+    ws: &Workspace,
+    budget: &TokenBudget,
+    client: &ModelClient,
+) -> Result<Option<u64>> {
+    if let Some(label) = triage::tier0_classify(event, transport, watched_channels) {
+        match label {
+            TriageLabel::Ignore => return Ok(None),
+            TriageLabel::ActNow => return Ok(Some(0)),
+            TriageLabel::Queue => {
+                logger::append_log(
+                    ws.path(), &event.channel, &event.user,
+                    &format!("[queued] {}", event.content),
+                ).await?;
+                return Ok(None);
+            }
+        }
+    }
+
+    // Tier 1 (LLM-based) — requires budget
+    if !budget.is_available().await {
+        logger::append_log(
+            ws.path(), &event.channel, &event.user,
+            &format!("[log-only] {}", event.content),
+        ).await?;
+        return Ok(None);
+    }
+
+    let raw_intents = ws.intents().await;
+    let intent_summary = context::compress_intents(&raw_intents, 500);
+    let (label, reasoning, triage_tokens) =
+        triage::tier1_classify(event, &intent_summary, client, None).await?;
+
+    budget.record(triage_tokens).await;
+    info!(label = %label, reasoning = %reasoning, triage_tokens, "Tier 1 triage result");
+
+    match label {
+        TriageLabel::Ignore => {
+            logger::append_log(ws.path(), &event.channel, &event.user, &event.content).await?;
+            Ok(None)
+        }
+        TriageLabel::Queue => {
+            logger::append_log(
+                ws.path(), &event.channel, &event.user,
+                &format!("[queued] {}", event.content),
+            ).await?;
+            Ok(None)
+        }
+        TriageLabel::ActNow => Ok(Some(triage_tokens)),
+    }
+}
+
+/// Fetch thread context for threaded messages.
+async fn fetch_thread_context(
+    event: &DelegateEvent,
+    messenger: &dyn Messenger,
+    thread_ts: &str,
+) -> String {
+    if event.thread_ts.is_none() {
+        return String::new();
+    }
+    let messages = match messenger.get_thread(&event.channel, thread_ts).await {
+        Ok(m) => m,
+        Err(_) => return String::new(),
+    };
+    let mut lines = Vec::new();
+    for msg in &messages {
+        if msg.timestamp != event.timestamp {
+            let name = messenger.get_user_name(&msg.user_id).await;
+            lines.push(format!("<{name}> {}", msg.text));
+        }
+    }
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("Thread history (oldest first):\n{}", lines.join("\n"))
+    }
+}
+
+/// Event handler's tool loop — includes approval workflow and reply/action tracking.
+/// Returns (final_content, has_reply, action_summaries, silent_actions, tokens_used).
+async fn run_event_tool_loop(
+    initial_response: models::ModelResponse,
+    user_prompt: &str,
+    system: &str,
+    model: &Option<String>,
+    tools: &[Value],
+    client: &ModelClient,
+    ctx: &ToolContext<'_>,
+    budget: &TokenBudget,
+    hb_config: &heartbeat::HeartbeatConfig,
+) -> (String, bool, Vec<String>, Vec<String>, u64) {
     let mut conversation: Vec<Value> = vec![
         serde_json::json!({"role": "user", "content": user_prompt}),
     ];
-    let mut current_response = response;
+    let mut current_response = initial_response;
+    let mut tokens_used: u64 = 0;
+    let mut has_reply = false;
+    let mut action_summaries: Vec<String> = Vec::new();
+    let mut silent_actions: Vec<String> = Vec::new();
     let mut turn = 0;
 
     loop {
@@ -522,775 +565,552 @@ async fn handle_event(
 
         for call in &current_response.tool_calls {
             let tier = classify_action(&call.name);
-            info!(tool = %call.name, tier = ?tier, "Executing tool call");
-            all_actions.push(call.name.clone());
 
-            // Audit trail for approval-required actions
+            // Approval workflow for RequiresApproval tools
             if tier == ActionTier::RequiresApproval {
-                let _ = write_pending_action(ws, call, &event).await;
+                if let Some(deferred) = try_defer_for_approval(call, ctx, hb_config).await {
+                    tool_results.push((call.id.clone(), deferred.tool_result));
+                    has_reply = true;
+                    action_summaries.push(deferred.summary);
+                    continue;
+                }
+                // No approver configured or DM failed — execute with audit trail
+                let _ = approval::write_audit_trail(ctx.ws, call, ctx.event).await;
             }
 
-            let result = execute_tool(call, slack, ws, &event, thread_ts).await;
+            let result = tools::execute_tool(call, ctx).await;
 
-            if call.name == "reply" {
+            if is_reply_tool(&call.name) {
                 has_reply = true;
             }
-
-            if call.name == "read_file" || call.name == "recall_memory" || call.name == "channel_history" {
+            if is_information_tool(&call.name) {
                 needs_followup = true;
             }
+            if tier == ActionTier::AutonomousWithNotice && !is_reply_tool(&call.name) && call.name != "post" {
+                silent_actions.push(summarize_action(call, &result));
+            }
 
+            action_summaries.push(summarize_action(call, &result));
             tool_results.push((call.id.clone(), result));
         }
 
         turn += 1;
-        if !needs_followup || turn >= MAX_TOOL_TURNS {
+        if !needs_followup || turn >= MAX_TOOL_TURNS || has_reply {
             break;
         }
 
-        // Append assistant response + tool results to conversation history
+        // Continue multi-turn conversation
         conversation.push(current_response.raw_assistant_message.clone());
-        for (tool_call_id, result) in &tool_results {
+        for (id, result) in &tool_results {
             conversation.push(serde_json::json!({
                 "role": "tool",
-                "tool_call_id": tool_call_id,
+                "tool_call_id": id,
                 "content": result
             }));
         }
 
-        info!(turn = turn, "Multi-turn: sending tool results back to LLM");
+        if !budget.is_available().await {
+            break;
+        }
 
-        let next_response = client
+        match client
             .chat(ChatOptions {
-                system: system_prompt.clone(),
+                system: system.to_string(),
                 messages: conversation.clone(),
                 model: model.clone(),
                 max_tokens: Some(2048),
                 temperature: Some(0.7),
-                tools: Some(tools.clone()),
+                tools: Some(tools.to_vec()),
             })
-            .await?;
-
-        event_tokens += next_response.input_tokens + next_response.output_tokens;
-        budget.record(next_response.input_tokens + next_response.output_tokens).await;
-
-        info!(
-            tool_calls = next_response.tool_calls.len(),
-            content_len = next_response.content.len(),
-            tokens = next_response.input_tokens + next_response.output_tokens,
-            "Multi-turn response received"
-        );
-
-        final_content = next_response.content.clone();
-        current_response = next_response;
-    }
-
-    // If model returned text content but no reply tool call, post it
-    if !final_content.is_empty() && !has_reply {
-        info!("Model returned text content without reply tool, posting as reply");
-        slack
-            .post_message(&event.channel, &final_content, Some(thread_ts))
-            .await?;
-    }
-
-    // Log the interaction
-    logger::append_log(ws.path(), &event.channel, &event.user, &event.content).await?;
-    if !all_actions.is_empty() {
-        logger::append_log(
-            ws.path(),
-            &event.channel,
-            "delegate-bot",
-            &format!("[actions: {}]", all_actions.join(", ")),
-        )
-        .await?;
-    }
-
-    // Record span fields for structured logging
-    let span = tracing::Span::current();
-    span.record("total_tokens", event_tokens);
-    span.record("tool_count", all_actions.len());
-
-    info!(
-        duration_ms = event_start.elapsed().as_millis() as u64,
-        tokens = event_tokens,
-        actions = all_actions.len(),
-        "Event handling complete"
-    );
-
-    Ok(())
-}
-
-/// Execute a single tool call and return a result string for multi-turn.
-#[tracing::instrument(skip(slack, ws, event), fields(tool = %call.name))]
-async fn execute_tool(
-    call: &ToolCall,
-    slack: &SlackSocket,
-    ws: &Workspace,
-    event: &DelegateEvent,
-    thread_ts: &str,
-) -> String {
-    match call.name.as_str() {
-        "react" => {
-            let emoji = call.arguments["emoji"].as_str().unwrap_or("eyes");
-            match slack
-                .add_reaction(&event.channel, &event.timestamp, emoji)
-                .await
-            {
-                Ok(_) => format!("Reacted with :{emoji}:"),
-                Err(e) => format!("Failed to react: {e}"),
-            }
-        }
-        "reply" => {
-            let text = call.arguments["text"].as_str().unwrap_or("");
-            if !text.is_empty() {
-                match slack
-                    .post_message(&event.channel, text, Some(thread_ts))
-                    .await
-                {
-                    Ok(_) => "Reply posted".to_string(),
-                    Err(e) => format!("Failed to reply: {e}"),
-                }
-            } else {
-                "Empty reply, skipped".to_string()
-            }
-        }
-        "post" => {
-            let channel = call.arguments["channel"].as_str().unwrap_or("");
-            let text = call.arguments["text"].as_str().unwrap_or("");
-            if !channel.is_empty() && !text.is_empty() {
-                match slack.post_message(channel, text, None).await {
-                    Ok(_) => format!("Posted to {channel}"),
-                    Err(e) => format!("Failed to post: {e}"),
-                }
-            } else {
-                "Missing channel or text, skipped".to_string()
-            }
-        }
-        "no_action" => {
-            let reason = call.arguments["reason"].as_str().unwrap_or("no reason given");
-            info!(reason = %reason, "Model chose no_action");
-            format!("No action taken: {reason}")
-        }
-        "create_skill" => {
-            let name = call.arguments["name"].as_str().unwrap_or("");
-            let description = call.arguments["description"].as_str().unwrap_or("");
-            let content = call.arguments["content"].as_str().unwrap_or("");
-            if !name.is_empty() && !content.is_empty() {
-                let skill_dir = ws.path().join("skills").join(name);
-                if let Err(e) = tokio::fs::create_dir_all(&skill_dir).await {
-                    return format!("Failed to create skill directory: {e}");
-                }
-                let skill_md =
-                    format!("---\nname: {name}\ndescription: {description}\n---\n\n{content}\n");
-                let skill_path = skill_dir.join("SKILL.md");
-                match tokio::fs::write(&skill_path, &skill_md).await {
-                    Ok(_) => {
-                        info!(skill = %name, "Created skill");
-                        format!("Skill '{name}' created")
-                    }
-                    Err(e) => format!("Failed to write skill: {e}"),
-                }
-            } else {
-                "Missing name or content for skill".to_string()
-            }
-        }
-        "read_file" => {
-            let path = call.arguments["path"].as_str().unwrap_or("");
-            if path.is_empty() {
-                return "No path provided".to_string();
-            }
-            if path.contains("..") {
-                return "Path traversal blocked".to_string();
-            }
-            let full = ws.path().join(path);
-            match tokio::fs::read_to_string(&full).await {
-                Ok(contents) => {
-                    info!(path = %path, len = contents.len(), "Read file");
-                    // Truncate very large files to avoid blowing up context
-                    if contents.len() > 10000 {
-                        format!("{}\n\n[truncated, {} bytes total]", &contents[..10000], contents.len())
-                    } else {
-                        contents
-                    }
-                }
-                Err(_) => format!("File not found: {path}"),
-            }
-        }
-        "write_file" => {
-            let path = call.arguments["path"].as_str().unwrap_or("");
-            let content = call.arguments["content"].as_str().unwrap_or("");
-            if path.is_empty() {
-                return "No path provided".to_string();
-            }
-            if path.contains("..") {
-                return "Path traversal blocked".to_string();
-            }
-            let full = ws.path().join(path);
-            if let Some(parent) = full.parent() {
-                let _ = tokio::fs::create_dir_all(parent).await;
-            }
-            match tokio::fs::write(&full, content).await {
-                Ok(_) => {
-                    info!(path = %path, "Wrote file");
-                    format!("Written to {path}")
-                }
-                Err(e) => format!("Failed to write {path}: {e}"),
-            }
-        }
-        "dm_user" => {
-            let user = call.arguments["user"].as_str().unwrap_or("");
-            let text = call.arguments["text"].as_str().unwrap_or("");
-            if user.is_empty() || text.is_empty() {
-                return "Missing user or text".to_string();
-            }
-            match slack.send_dm(user, text).await {
-                Ok(_) => {
-                    info!(user = %user, "Sent DM");
-                    format!("DM sent to {user}")
-                }
-                Err(e) => format!("Failed to send DM: {e}"),
-            }
-        }
-        "channel_history" => {
-            let channel = call.arguments["channel"].as_str().unwrap_or("");
-            if channel.is_empty() {
-                return "No channel provided".to_string();
-            }
-            let count = call.arguments["count"].as_u64().unwrap_or(20).min(50) as u32;
-
-            match slack.get_channel_history(channel, count).await {
-                Ok(messages) => {
-                    if messages.is_empty() {
-                        return format!("No messages found in channel {channel}");
-                    }
-
-                    let mut lines = Vec::new();
-                    for msg in &messages {
-                        let uid = msg["user"].as_str().unwrap_or("unknown");
-                        let name = slack.get_user_name(uid).await;
-                        let text = msg["text"].as_str().unwrap_or("");
-                        let ts = msg["ts"].as_str().unwrap_or("");
-                        lines.push(format!("[{ts}] <{name}> {text}"));
-                    }
-
-                    // Reverse so oldest is first (messages come newest-first from API)
-                    lines.reverse();
-
-                    info!(channel = %channel, count = lines.len(), "Read channel history");
-                    let result = lines.join("\n");
-                    // Truncate if too large
-                    if result.len() > 8000 {
-                        format!("{}\n\n[truncated, {} messages total]", &result[..8000], messages.len())
-                    } else {
-                        result
-                    }
-                }
-                Err(e) => format!("Failed to read channel history: {e}"),
-            }
-        }
-        "save_memory" => {
-            let topic = call.arguments["topic"].as_str().unwrap_or("");
-            let content = call.arguments["content"].as_str().unwrap_or("");
-            let summary = call.arguments["summary"].as_str().unwrap_or("");
-            if topic.is_empty() || content.is_empty() {
-                return "Missing topic or content".to_string();
-            }
-            // Validate topic slug (kebab-case, no path traversal)
-            if topic.contains("..") || topic.contains('/') || topic.contains('\\') {
-                return "Invalid topic slug".to_string();
-            }
-
-            // Write memory/{topic}.md
-            let memory_dir = ws.path().join("memory");
-            if let Err(e) = tokio::fs::create_dir_all(&memory_dir).await {
-                return format!("Failed to create memory directory: {e}");
-            }
-            let topic_path = memory_dir.join(format!("{topic}.md"));
-            if let Err(e) = tokio::fs::write(&topic_path, content).await {
-                return format!("Failed to write memory/{topic}.md: {e}");
-            }
-
-            // Update MEMORY.md index
-            let memory_index_path = ws.path().join("MEMORY.md");
-            let existing_index = tokio::fs::read_to_string(&memory_index_path)
-                .await
-                .unwrap_or_else(|_| "# Memory Index\n\nTopics stored in `memory/`.\n".to_string());
-
-            let entry_marker = format!("memory/{topic}.md");
-            let new_entry = format!("- [{topic}]({entry_marker}) — {summary}");
-
-            let updated_index = if existing_index.contains(&entry_marker) {
-                // Replace existing entry line
-                existing_index
-                    .lines()
-                    .map(|line| {
-                        if line.contains(&entry_marker) {
-                            new_entry.as_str()
-                        } else {
-                            line
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            } else {
-                // Append new entry
-                format!("{}\n{}", existing_index.trim_end(), new_entry)
-            };
-
-            if let Err(e) = tokio::fs::write(&memory_index_path, &updated_index).await {
-                return format!("Wrote memory/{topic}.md but failed to update MEMORY.md: {e}");
-            }
-
-            info!(topic = %topic, "Saved memory");
-            format!("Saved memory/{topic}.md and updated MEMORY.md index")
-        }
-        "recall_memory" => {
-            let query = call.arguments["query"].as_str().unwrap_or("");
-            if query.is_empty() {
-                return "No query provided".to_string();
-            }
-
-            let memory_dir = ws.path().join("memory");
-            let mut results = Vec::new();
-
-            // Also check MEMORY.md index
-            let memory_index = tokio::fs::read_to_string(ws.path().join("MEMORY.md"))
-                .await
-                .unwrap_or_default();
-            if !memory_index.is_empty() {
-                results.push(format!("## MEMORY.md Index\n{memory_index}"));
-            }
-
-            // Scan all memory files
-            let mut entries = match tokio::fs::read_dir(&memory_dir).await {
-                Ok(e) => e,
-                Err(_) => {
-                    if results.is_empty() {
-                        return "No memory files found. Memory is empty.".to_string();
-                    }
-                    return results.join("\n\n---\n\n");
-                }
-            };
-
-            let query_lower = query.to_lowercase();
-            let query_terms: Vec<&str> = query_lower.split_whitespace().collect();
-
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                    continue;
-                }
-
-                let filename = path.file_stem()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                let content = match tokio::fs::read_to_string(&path).await {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-
-                let content_lower = content.to_lowercase();
-                let filename_lower = filename.to_lowercase();
-
-                // Match if any query term appears in filename or content
-                let matches = query_terms.iter().any(|term| {
-                    filename_lower.contains(term) || content_lower.contains(term)
-                });
-
-                if matches {
-                    // Truncate long files
-                    let display = if content.len() > 3000 {
-                        format!("{}...\n[truncated, {} bytes total]", &content[..3000], content.len())
-                    } else {
-                        content
-                    };
-                    results.push(format!("## memory/{filename}.md\n{display}"));
-                }
-            }
-
-            if results.is_empty() {
-                format!("No memory entries found matching '{query}'")
-            } else {
-                info!(query = %query, matches = results.len(), "Memory recall");
-                results.join("\n\n---\n\n")
-            }
-        }
-        "log_decision" => {
-            let decision = call.arguments["decision"].as_str().unwrap_or("");
-            let reasoning = call.arguments["reasoning"].as_str().unwrap_or("");
-            let participants = call.arguments["participants"].as_str().unwrap_or("");
-            let context = call.arguments["context"].as_str().unwrap_or("unknown");
-            if decision.is_empty() {
-                return "No decision provided".to_string();
-            }
-
-            let decisions_path = ws.path().join("memory").join("decisions.md");
-            let _ = tokio::fs::create_dir_all(ws.path().join("memory")).await;
-
-            let existing = tokio::fs::read_to_string(&decisions_path)
-                .await
-                .unwrap_or_else(|_| "# Decision Log\n\nDecisions captured from team conversations.\n".to_string());
-
-            let date = chrono::Local::now().format("%Y-%m-%d").to_string();
-            let new_entry = format!(
-                "\n---\n\n### {} ({})\n\n\
-                 **Decision:** {}\n\
-                 **Reasoning:** {}\n\
-                 **Participants:** {}\n\
-                 **Context:** {}\n",
-                decision.chars().take(60).collect::<String>(),
-                date,
-                decision,
-                reasoning,
-                participants,
-                context,
-            );
-
-            let updated = format!("{}{}", existing.trim_end(), new_entry);
-            match tokio::fs::write(&decisions_path, &updated).await {
-                Ok(_) => {
-                    info!(decision = %decision, "Logged decision");
-
-                    // Also update MEMORY.md index if decisions.md isn't already listed
-                    let memory_index_path = ws.path().join("MEMORY.md");
-                    let index = tokio::fs::read_to_string(&memory_index_path)
-                        .await
-                        .unwrap_or_default();
-                    if !index.contains("memory/decisions.md") {
-                        let updated_index = format!(
-                            "{}\n- [decisions](memory/decisions.md) — Team decisions captured from conversations",
-                            index.trim_end()
-                        );
-                        let _ = tokio::fs::write(&memory_index_path, &updated_index).await;
-                    }
-
-                    format!("Decision logged: {}", &decision[..decision.len().min(80)])
-                }
-                Err(e) => format!("Failed to log decision: {e}"),
-            }
-        }
-        "update_intents" => {
-            let content = call.arguments["content"].as_str().unwrap_or("");
-            let reason = call.arguments["reason"].as_str().unwrap_or("no reason given");
-            if content.is_empty() {
-                return "No content provided".to_string();
-            }
-
-            let intents_path = ws.path().join("INTENTS.md");
-
-            // Log the change reason for auditability
-            info!(reason = %reason, "Updating INTENTS.md");
-            logger::append_log(
-                ws.path(),
-                "internal",
-                "delegate-bot",
-                &format!("[intents-update] {reason}"),
-            )
             .await
-            .ok();
-
-            match tokio::fs::write(&intents_path, content).await {
-                Ok(_) => format!("INTENTS.md updated. Reason: {reason}"),
-                Err(e) => format!("Failed to update INTENTS.md: {e}"),
+        {
+            Ok(resp) => {
+                let t = resp.input_tokens + resp.output_tokens;
+                tokens_used += t;
+                budget.record(t).await;
+                current_response = resp;
+            }
+            Err(e) => {
+                warn!("Event tool loop LLM call failed: {e}");
+                break;
             }
         }
-        other => {
-            warn!(tool = %other, "Unknown tool call");
-            format!("Unknown tool: {other}")
-        }
     }
+
+    (current_response.content.clone(), has_reply, action_summaries, silent_actions, tokens_used)
 }
 
-/// Write a proposed action to the pending/ audit trail.
-/// Per ARCHITECTURE.md: file is never deleted — permanent record of what was proposed.
-async fn write_pending_action(
-    ws: &Workspace,
-    call: &ToolCall,
-    event: &DelegateEvent,
-) -> Result<()> {
-    let pending_dir = ws.path().join("pending");
-    tokio::fs::create_dir_all(&pending_dir).await?;
+/// Result of attempting to defer a tool call for approval.
+struct ApprovalDeferral {
+    tool_result: String,
+    summary: String,
+}
 
-    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let slug = call.name.replace('_', "-");
-    let filename = format!("{timestamp}-{slug}.md");
+/// Try to defer a tool call to the approval workflow. Returns Some if deferred, None if
+/// execution should proceed normally (no approver configured or DM failed).
+async fn try_defer_for_approval(
+    call: &models::ToolCall,
+    ctx: &ToolContext<'_>,
+    hb_config: &heartbeat::HeartbeatConfig,
+) -> Option<ApprovalDeferral> {
+    let approver_id = hb_config.default_approver.as_deref()?;
 
-    let content = format!(
-        "# Pending Action: {}\n\n\
-         **Time:** {}\n\
-         **Tool:** {}\n\
-         **Trigger channel:** {}\n\
-         **Trigger user:** {}\n\
-         **Trigger content:** {}\n\n\
-         ## Arguments\n\n\
-         ```json\n{}\n```\n\n\
-         ## Status\n\n\
-         Executed (dogfooding mode — approval workflow not yet active)\n",
-        call.name,
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-        call.name,
-        event.channel,
-        event.user,
-        event.content,
-        serde_json::to_string_pretty(&call.arguments).unwrap_or_default(),
+    let pending = approval::PendingAction::new(
+        &call.name,
+        &call.arguments,
+        &ctx.event.user,
+        &ctx.event.channel,
+        &ctx.event.timestamp,
+        ctx.event.thread_ts.as_deref(),
+        approver_id,
+        hb_config.backup_approver.as_deref(),
+        hb_config.approval_timeout_secs,
     );
 
-    tokio::fs::write(pending_dir.join(&filename), &content).await?;
-    info!(file = %filename, tool = %call.name, "Wrote pending action audit trail");
+    let approver_name = ctx.messenger.get_user_name(approver_id).await;
+    let approval_msg = format!(
+        "Approval request from Delegate:\n\
+         *Tool:* `{}`\n\
+         *Args:* ```{}```\n\
+         *Triggered by:* <@{}> in <#{}>\n\n\
+         React with :white_check_mark: to approve or :x: to reject.\n\
+         Expires in {} hours.",
+        call.name,
+        serde_json::to_string_pretty(&call.arguments).unwrap_or_default(),
+        ctx.event.user,
+        ctx.event.channel,
+        hb_config.approval_timeout_secs / 3600,
+    );
 
-    Ok(())
+    let sent = match ctx.messenger.send_dm(approver_id, &approval_msg).await {
+        Ok(s) => s,
+        Err(e) => {
+            // Policy: if DM fails, fall through to immediate execution
+            warn!(error = %e, "Approval DM failed, executing tool immediately");
+            return None;
+        }
+    };
+
+    let mut pending = pending;
+    pending.dm_channel = Some(sent.channel);
+    pending.dm_ts = Some(sent.timestamp);
+    if let Err(e) = approval::save_pending(ctx.ws.path(), &pending).await {
+        warn!(error = %e, "Failed to save pending approval");
+        return None;
+    }
+
+    // Notify the triggering thread
+    let _ = ctx.messenger
+        .post_message(
+            &ctx.event.channel,
+            &format!("That needs approval. I've sent a request to {approver_name}."),
+            Some(ctx.thread_ts),
+        )
+        .await;
+
+    Some(ApprovalDeferral {
+        tool_result: format!("Approval request sent to {approver_name}. Action deferred."),
+        summary: format!("deferred {} (approval sent to {approver_name})", call.name),
+    })
 }
 
-/// Background heartbeat loop.
-/// Wakes at configured interval, scans daily log for new entries since last tick.
-/// If new entries exist, runs batched reasoning through the intent lens.
-/// Also checks cron schedules and fires scheduled outputs.
+// ── Heartbeat loop ─────────────────────────────────────────────────────
+
 async fn run_heartbeat(
     ws: &Workspace,
     client: &ModelClient,
-    slack: &SlackSocket,
+    messenger: &dyn Messenger,
     model_override: Option<&str>,
     budget: &TokenBudget,
+    validate_id: &ValidateId,
 ) -> Result<()> {
-    // Initial delay to let the bot start up and load context
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
-    let mut last_log_line: usize = 0;
-    let mut last_cron_fire: std::collections::HashMap<String, chrono::DateTime<chrono::Local>> =
-        std::collections::HashMap::new();
+    let (_, initial_line) = heartbeat::read_log_since(ws.path(), 0).await;
+    let mut last_log_line: usize = initial_line;
 
     info!("Heartbeat loop started");
 
     loop {
-        // Re-read config each tick so HEARTBEAT.md changes take effect immediately
-        let config = heartbeat::parse_config(ws.path()).await;
+        let config = heartbeat::parse_config(ws.path(), &**validate_id).await;
         let interval = std::time::Duration::from_secs(config.interval_secs);
-
-        // Update budget limit in case HEARTBEAT.md changed it
         budget.set_limit(config.daily_token_budget).await;
 
-        // --- Check for new log entries ---
-        let (new_entries, current_line) =
-            heartbeat::read_log_since(ws.path(), last_log_line).await;
+        // Scan pending approvals for timeouts
+        approval::scan_timeouts(ws.path(), messenger, &config).await;
+
+        // Check for new log entries
+        let (new_entries, current_line) = heartbeat::read_log_since(ws.path(), last_log_line).await;
 
         if !new_entries.is_empty() {
-            let has_queued = new_entries.contains("[queued]");
-            let entry_count = current_line - last_log_line;
-
-            // Only invoke LLM if there are queued entries or significant activity (5+ entries)
-            if !has_queued && entry_count < 5 {
-                debug!(
-                    new_lines = entry_count,
-                    "Heartbeat: new entries but nothing queued, skipping reasoning"
-                );
-                last_log_line = current_line;
-                tokio::time::sleep(interval).await;
-                continue;
-            }
-
-            // Budget check before heartbeat reasoning
-            if !budget.is_available().await {
-                debug!("Heartbeat: skipping reasoning, token budget exhausted");
-                last_log_line = current_line;
-                tokio::time::sleep(interval).await;
-                continue;
-            }
-
-            info!(
-                new_lines = entry_count,
-                queued = has_queued,
-                "Heartbeat: processing batch"
-            );
-
-            // Batched reasoning: assemble context with Digest task type
-            let recent_logs = logger::read_recent_logs(ws.path()).await;
-
-            // Count queued vs total entries for the prompt
-            let queued_count = new_entries.lines().filter(|l| l.contains("[queued]")).count();
-            let total_count = current_line - last_log_line;
-
-            // Build a synthetic event for the heartbeat tick
-            let heartbeat_event = DelegateEvent {
-                id: "heartbeat".to_string(),
-                event_type: "heartbeat".to_string(),
-                channel: "internal".to_string(),
-                user: "system".to_string(),
-                content: format!(
-                    "Heartbeat tick. {total_count} new log entries since last check ({queued_count} queued for batch review).\n\n\
-                     Review these entries as a batch. Look for:\n\
-                     - Patterns across multiple signals (same topic from different people/channels)\n\
-                     - Queued items [queued] that individually seemed routine but together suggest something worth flagging\n\
-                     - Connections to active intents that weren't obvious at triage time\n\
-                     - Anything that warrants proactive action\n\n\
-                     If nothing stands out, say \"No patterns detected\" — don't force insights.\n\n\
-                     Entries:\n{new_entries}"
-                ),
-                timestamp: chrono::Local::now().format("%s").to_string(),
-                thread_ts: None,
-                raw: serde_json::json!({}),
-            };
-
-            let compiled = context::compile(
-                &heartbeat_event,
-                ws.path(),
-                context::TaskType::Digest,
-                &recent_logs,
-                config.qa_token_budget,
+            process_heartbeat_batch(
+                &new_entries,
+                current_line - last_log_line,
+                ws,
+                client,
+                messenger,
+                model_override,
+                budget,
+                &config,
             )
             .await;
-
-            match compiled {
-                Ok(ctx) => {
-                    let (system, prompt) = context::to_prompt(&ctx);
-
-                    let response = client
-                        .complete(models::CompleteOptions {
-                            system,
-                            prompt,
-                            model: model_override.map(|s| s.to_string()),
-                            max_tokens: Some(1024),
-                            temperature: Some(0.5),
-                            tools: None, // Heartbeat observes, doesn't act (yet)
-                        })
-                        .await;
-
-                    match response {
-                        Ok(resp) => {
-                            budget
-                                .record(resp.input_tokens + resp.output_tokens)
-                                .await;
-                            if !resp.content.is_empty() {
-                                info!(
-                                    tokens = resp.input_tokens + resp.output_tokens,
-                                    "Heartbeat reasoning complete"
-                                );
-                                // Log the heartbeat's observations
-                                logger::append_log(
-                                    ws.path(),
-                                    "internal",
-                                    "delegate-heartbeat",
-                                    &format!("[heartbeat] {}", resp.content),
-                                )
-                                .await
-                                .ok();
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Heartbeat LLM call failed: {e}");
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!("Heartbeat context assembly failed: {e}");
-                }
-            }
-        } else {
-            debug!("Heartbeat: no-op, no new entries");
         }
 
         last_log_line = current_line;
-
-        // --- Check cron schedules ---
-        let now = chrono::Local::now();
-        for job in &config.cron_jobs {
-            if heartbeat::should_fire(job, &now) {
-                // Prevent double-firing within the same window
-                if let Some(last) = last_cron_fire.get(&job.name) {
-                    if (now - *last).num_seconds().unsigned_abs() < config.interval_secs {
-                        continue;
-                    }
-                }
-
-                // Budget check for cron
-                if !budget.is_available().await {
-                    debug!(job = %job.name, "Skipping cron, token budget exhausted");
-                    continue;
-                }
-
-                info!(job = %job.name, channel = %job.channel, "Cron job firing");
-
-                let task_type = match job.output_type.as_str() {
-                    "update" => context::TaskType::Update,
-                    _ => context::TaskType::Digest,
-                };
-
-                let recent_logs = logger::read_recent_logs(ws.path()).await;
-                let cron_event = DelegateEvent {
-                    id: format!("cron-{}", job.name),
-                    event_type: "cron".to_string(),
-                    channel: job.channel.clone(),
-                    user: "system".to_string(),
-                    content: format!("Scheduled output: {}. Compile and post.", job.name),
-                    timestamp: now.format("%s").to_string(),
-                    thread_ts: None,
-                    raw: serde_json::json!({}),
-                };
-
-                let compiled = context::compile(
-                    &cron_event,
-                    ws.path(),
-                    task_type,
-                    &recent_logs,
-                    config.qa_token_budget,
-                )
-                .await;
-
-                match compiled {
-                    Ok(ctx) => {
-                        let (system, prompt) = context::to_prompt(&ctx);
-
-                        match client
-                            .complete(models::CompleteOptions {
-                                system,
-                                prompt,
-                                model: model_override.map(|s| s.to_string()),
-                                max_tokens: Some(2048),
-                                temperature: Some(0.5),
-                                tools: None,
-                            })
-                            .await
-                        {
-                            Ok(resp) if !resp.content.is_empty() => {
-                                budget
-                                    .record(resp.input_tokens + resp.output_tokens)
-                                    .await;
-                                // Post to the target channel
-                                if let Err(e) = slack
-                                    .post_message(&job.channel, &resp.content, None)
-                                    .await
-                                {
-                                    warn!(job = %job.name, "Failed to post cron output: {e}");
-                                } else {
-                                    info!(job = %job.name, "Cron output posted");
-                                    logger::append_log(
-                                        ws.path(),
-                                        &job.channel,
-                                        "delegate-cron",
-                                        &format!("[{}] {}", job.name, &resp.content[..resp.content.len().min(200)]),
-                                    )
-                                    .await
-                                    .ok();
-                                }
-                            }
-                            Ok(_) => {
-                                debug!(job = %job.name, "Cron produced empty output");
-                            }
-                            Err(e) => {
-                                warn!(job = %job.name, "Cron LLM call failed: {e}");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!(job = %job.name, "Cron context assembly failed: {e}");
-                    }
-                }
-
-                last_cron_fire.insert(job.name.clone(), now);
-            }
-        }
 
         tokio::time::sleep(interval).await;
     }
 }
 
+/// Process a batch of new log entries during a heartbeat tick.
+async fn process_heartbeat_batch(
+    new_entries: &str,
+    entry_count: usize,
+    ws: &Workspace,
+    client: &ModelClient,
+    messenger: &dyn Messenger,
+    model_override: Option<&str>,
+    budget: &TokenBudget,
+    config: &heartbeat::HeartbeatConfig,
+) {
+    let has_queued = new_entries.contains("[queued]");
+
+    if !has_queued && entry_count < 5 {
+        debug!(new_lines = entry_count, "Heartbeat: nothing queued, skipping");
+        return;
+    }
+    if !budget.is_available().await {
+        debug!("Heartbeat: skipping, budget exhausted");
+        return;
+    }
+
+    info!(new_lines = entry_count, queued = has_queued, "Heartbeat: processing batch");
+
+    let recent_logs = logger::read_recent_logs(ws.path()).await;
+    let queued_count = new_entries.lines().filter(|l| l.contains("[queued]")).count();
+
+    let heartbeat_event = DelegateEvent {
+        id: "heartbeat".to_string(),
+        event_type: "heartbeat".to_string(),
+        channel: "internal".to_string(),
+        user: "system".to_string(),
+        content: format!(
+            "Heartbeat tick. {entry_count} new log entries since last check ({queued_count} queued for batch review).\n\n\
+             Review these entries as a batch. Look for:\n\
+             - Patterns across multiple signals (same topic from different people/channels)\n\
+             - Queued items [queued] that individually seemed routine but together suggest something worth flagging\n\
+             - Connections to active intents that weren't obvious at triage time\n\
+             - Anything that warrants proactive action\n\n\
+             If nothing stands out, say \"No patterns detected\" — don't force insights.\n\n\
+             Use dm_user only for approval escalations or urgent notifications.\n\n\
+             Entries:\n{new_entries}"
+        ),
+        timestamp: chrono::Local::now().format("%s").to_string(),
+        thread_ts: None,
+        raw: serde_json::json!({}),
+    };
+
+    let compiled = match context::compile(
+        &heartbeat_event, ws.path(), TaskType::Digest, &recent_logs, config.qa_token_budget, None, false,
+    ).await {
+        Ok(ctx) => ctx,
+        Err(e) => { warn!("Heartbeat context assembly failed: {e}"); return; }
+    };
+
+    let (system, prompt) = context::to_prompt(&compiled);
+    let hb_tools = tools::heartbeat_tools();
+
+    let response = match client.complete(CompleteOptions {
+        system: system.clone(),
+        prompt: prompt.clone(),
+        model: model_override.map(|s| s.to_string()),
+        max_tokens: Some(1024),
+        temperature: Some(0.5),
+        tools: Some(hb_tools.clone()),
+    }).await {
+        Ok(r) => r,
+        Err(e) => { warn!("Heartbeat LLM call failed: {e}"); return; }
+    };
+
+    budget.record(response.input_tokens + response.output_tokens).await;
+
+    let outcome = tool_loop::run_tool_loop(
+        response,
+        &prompt,
+        client,
+        messenger,
+        ws,
+        &heartbeat_event,
+        "",
+        budget,
+        &ToolLoopConfig {
+            system,
+            model: model_override.map(|s| s.to_string()),
+            tools: hb_tools,
+            max_turns: 3,
+            max_tokens: 1024,
+            temperature: 0.5,
+        },
+    )
+    .await;
+
+    if !outcome.final_content.is_empty() {
+        info!(tokens = outcome.total_tokens, "Heartbeat reasoning complete");
+        logger::append_log(
+            ws.path(), "internal", "delegate-heartbeat",
+            &format!("[heartbeat] {}", outcome.final_content),
+        ).await.ok();
+    }
+}
+
+// ── Cron scheduler ──────────────────────────────────────────────────────
+
+const CRON_TICK_SECS: u64 = 60;
+const CRON_DEDUP_SECS: i64 = 300;
+const CRON_CATCHUP_WINDOW_SECS: i64 = 2 * 3600; // 2 hours
+
+/// Load last-fired timestamps from workspace/cron_state.json.
+async fn load_last_fired(ws: &Workspace) -> HashMap<String, chrono::DateTime<chrono::Local>> {
+    let path = ws.path().join("cron_state.json");
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+    let map: HashMap<String, String> = match serde_json::from_str(&content) {
+        Ok(m) => m,
+        Err(e) => {
+            warn!("Corrupt cron_state.json, starting fresh: {e}");
+            return HashMap::new();
+        }
+    };
+    map.into_iter()
+        .filter_map(|(k, v)| {
+            chrono::DateTime::parse_from_rfc3339(&v)
+                .ok()
+                .map(|dt| (k, dt.with_timezone(&chrono::Local)))
+        })
+        .collect()
+}
+
+/// Save last-fired timestamps to workspace/cron_state.json.
+async fn save_last_fired(ws: &Workspace, state: &HashMap<String, chrono::DateTime<chrono::Local>>) {
+    let map: HashMap<&str, String> = state
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.to_rfc3339()))
+        .collect();
+    let json = match serde_json::to_string_pretty(&map) {
+        Ok(j) => j,
+        Err(e) => {
+            warn!("Failed to serialize cron state: {e}");
+            return;
+        }
+    };
+    if let Err(e) = tokio::fs::write(ws.path().join("cron_state.json"), json).await {
+        warn!("Failed to write cron_state.json: {e}");
+    }
+}
+
+/// Fire any cron jobs that were missed while the bot was down (within a 2-hour window).
+async fn check_missed_jobs(
+    config: &heartbeat::HeartbeatConfig,
+    last_fired: &mut HashMap<String, chrono::DateTime<chrono::Local>>,
+    ws: &Workspace,
+    client: &ModelClient,
+    messenger: &dyn Messenger,
+    model_override: Option<&str>,
+    budget: &TokenBudget,
+) {
+    let now = chrono::Local::now();
+    let today = now.date_naive();
+    let weekday = now.weekday().num_days_from_monday();
+
+    for job in &config.cron_jobs {
+        // Skip if wrong day of week
+        if !job.days.is_empty() && !job.days.contains(&weekday) {
+            continue;
+        }
+
+        // Build today's scheduled DateTime for this job
+        let scheduled = match today.and_time(job.time).and_local_timezone(chrono::Local) {
+            chrono::offset::LocalResult::Single(dt) => dt,
+            _ => continue,
+        };
+
+        // Only catch up if scheduled time is in the past
+        if scheduled > now {
+            continue;
+        }
+
+        // Only catch up within the 2-hour window
+        let elapsed = (now - scheduled).num_seconds();
+        if elapsed > CRON_CATCHUP_WINDOW_SECS {
+            continue;
+        }
+
+        // Skip if already fired today
+        if let Some(last) = last_fired.get(&job.name) {
+            if last.date_naive() == today {
+                continue;
+            }
+        }
+
+        info!(job = %job.name, "Catch-up: firing missed cron job");
+        run_cron_job(job, ws, client, messenger, model_override, budget, config).await;
+        last_fired.insert(job.name.clone(), now);
+    }
+
+    save_last_fired(ws, last_fired).await;
+}
+
+/// Independent cron scheduler loop with 60-second tick.
+async fn run_cron_scheduler(
+    ws: &Workspace,
+    client: &ModelClient,
+    messenger: &dyn Messenger,
+    model_override: Option<&str>,
+    budget: &TokenBudget,
+    validate_id: &ValidateId,
+) -> Result<()> {
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+    let mut last_fired = load_last_fired(ws).await;
+
+    // Startup catch-up: fire any missed jobs
+    let startup_config = heartbeat::parse_config(ws.path(), &**validate_id).await;
+    check_missed_jobs(
+        &startup_config,
+        &mut last_fired,
+        ws,
+        client,
+        messenger,
+        model_override,
+        budget,
+    )
+    .await;
+
+    info!("Cron scheduler started (tick: {CRON_TICK_SECS}s)");
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(CRON_TICK_SECS)).await;
+
+        let config = heartbeat::parse_config(ws.path(), &**validate_id).await;
+        let now = chrono::Local::now();
+
+        for job in &config.cron_jobs {
+            if !heartbeat::should_fire(job, &now, CRON_TICK_SECS * 2) {
+                continue;
+            }
+
+            // Dedup cooldown: skip if fired within CRON_DEDUP_SECS
+            if let Some(last) = last_fired.get(&job.name) {
+                if (now - *last).num_seconds().unsigned_abs() < CRON_DEDUP_SECS as u64 {
+                    continue;
+                }
+            }
+
+            run_cron_job(job, ws, client, messenger, model_override, budget, &config).await;
+            last_fired.insert(job.name.clone(), now);
+            save_last_fired(ws, &last_fired).await;
+        }
+    }
+}
+
+/// Run a single cron job.
+async fn run_cron_job(
+    job: &heartbeat::CronJob,
+    ws: &Workspace,
+    client: &ModelClient,
+    messenger: &dyn Messenger,
+    model_override: Option<&str>,
+    budget: &TokenBudget,
+    config: &heartbeat::HeartbeatConfig,
+) {
+    if !budget.is_available().await {
+        debug!(job = %job.name, "Skipping cron, budget exhausted");
+        return;
+    }
+
+    info!(job = %job.name, channel = %job.channel, "Cron job firing");
+
+    let task_type = match job.output_type.as_str() {
+        "update" => TaskType::Update,
+        _ => TaskType::Digest,
+    };
+
+    let channel_id = match messenger.resolve_channel_id(&job.channel).await {
+        Some(id) => id,
+        None => {
+            warn!(job = %job.name, channel = %job.channel, "Could not resolve channel, skipping cron");
+            return;
+        }
+    };
+
+    let now = chrono::Local::now();
+    let recent_logs = logger::read_recent_logs(ws.path()).await;
+    let cron_event = DelegateEvent {
+        id: format!("cron-{}", job.name),
+        event_type: "cron".to_string(),
+        channel: channel_id.clone(),
+        user: "system".to_string(),
+        content: format!("Scheduled output: {}. Compile and post.", job.name),
+        timestamp: now.format("%s").to_string(),
+        thread_ts: None,
+        raw: serde_json::json!({}),
+    };
+
+    let compiled = match context::compile(
+        &cron_event, ws.path(), task_type, &recent_logs, config.qa_token_budget, Some(&job.channel), false,
+    ).await {
+        Ok(ctx) => ctx,
+        Err(e) => { warn!(job = %job.name, "Cron context assembly failed: {e}"); return; }
+    };
+
+    let (system, prompt) = context::to_prompt(&compiled);
+    let cron_tools = tools::heartbeat_tools();
+
+    let response = match client.complete(CompleteOptions {
+        system: system.clone(),
+        prompt: prompt.clone(),
+        model: model_override.map(|s| s.to_string()),
+        max_tokens: Some(2048),
+        temperature: Some(0.5),
+        tools: Some(cron_tools.clone()),
+    }).await {
+        Ok(r) => r,
+        Err(e) => { warn!(job = %job.name, "Cron LLM call failed: {e}"); return; }
+    };
+
+    budget.record(response.input_tokens + response.output_tokens).await;
+
+    let outcome = tool_loop::run_tool_loop(
+        response,
+        &prompt,
+        client,
+        messenger,
+        ws,
+        &cron_event,
+        "",
+        budget,
+        &ToolLoopConfig {
+            system,
+            model: model_override.map(|s| s.to_string()),
+            tools: cron_tools,
+            max_turns: 3,
+            max_tokens: 2048,
+            temperature: 0.5,
+        },
+    )
+    .await;
+
+    if !outcome.final_content.is_empty() {
+        if let Err(e) = messenger.post_message(&channel_id, &outcome.final_content, None).await {
+            warn!(job = %job.name, "Failed to post cron output: {e}");
+        } else {
+            info!(job = %job.name, "Cron output posted");
+            logger::append_log(
+                ws.path(), &job.channel, "delegate-cron",
+                &format!("[{}] {}", job.name, tools::truncate_str(&outcome.final_content, 200)),
+            ).await.ok();
+        }
+    }
+}

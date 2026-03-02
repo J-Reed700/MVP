@@ -2,9 +2,12 @@ use anyhow::Result;
 use chrono::Local;
 use std::path::Path;
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 
 /// Append an entry to today's daily log file.
 /// Format: `HH:MM | #channel | @user | content`
+///
+/// Uses atomic file-append (O_APPEND) to avoid data loss under concurrent writes.
 pub async fn append_log(
     workspace: &Path,
     channel: &str,
@@ -19,16 +22,22 @@ pub async fn append_log(
     let log_file = logs_dir.join(format!("{today}.md"));
     let entry = format!("- {time} | #{channel} | @{user} | {content}\n");
 
-    // Create file with header if it doesn't exist
-    if !log_file.exists() {
+    // Use OpenOptions with create + append for atomic concurrent writes.
+    // If the file is new, prepend the header.
+    let is_new = !log_file.exists();
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file)
+        .await?;
+
+    if is_new {
         let header = format!("# Daily Log — {today}\n\n");
-        fs::write(&log_file, header).await?;
+        file.write_all(header.as_bytes()).await?;
     }
 
-    // Append the entry
-    let mut existing = fs::read_to_string(&log_file).await.unwrap_or_default();
-    existing.push_str(&entry);
-    fs::write(&log_file, existing).await?;
+    file.write_all(entry.as_bytes()).await?;
 
     Ok(())
 }

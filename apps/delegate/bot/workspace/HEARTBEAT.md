@@ -15,3 +15,11 @@
 - Daily budget: 500000 tokens
 - Question answering: 8000 tokens
 - Triage classification: 500 tokens
+
+## Notifications
+- Channel: #delegate-ops
+
+## Approvals
+- Default approver: (not configured — all actions auto-execute during dogfooding)
+- Backup approver: (not configured)
+- Timeout: 4 hours

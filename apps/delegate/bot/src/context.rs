@@ -5,8 +5,10 @@ use std::path::Path;
 use crate::event::DelegateEvent;
 use crate::models::estimate_tokens;
 use crate::retriever::{format_retrieved_content, retrieve};
+use crate::text;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Skill {
     pub name: String,
     pub description: String,
@@ -24,6 +26,7 @@ pub enum TaskType {
 pub struct CompiledContext {
     pub identity: String,
     pub intents: String,
+    pub heartbeat: String,
     pub memory: String,
     pub skills: Vec<Skill>,
     pub retrieved: String,
@@ -49,14 +52,19 @@ pub async fn compile(
     task_type: TaskType,
     recent_logs: &str,
     token_budget: usize,
+    channel_name: Option<&str>,
+    is_dm: bool,
 ) -> Result<CompiledContext> {
     // 1. Load always-on files (tiers 1-2: never cut)
     let identity = load_file(&workspace.join("IDENTITY.md")).await;
     let intents = load_file(&workspace.join("INTENTS.md")).await;
+    let heartbeat = load_file(&workspace.join("HEARTBEAT.md")).await;
     let skills = load_skills(&workspace.join("skills")).await;
 
     // 2. Build framing (tier 3: never cut)
-    let framing = build_framing(task_type, &event.channel);
+    // Use resolved channel name for audience inference, fall back to channel ID
+    let channel_for_framing = channel_name.unwrap_or(&event.channel);
+    let framing = build_framing(task_type, channel_for_framing, is_dm);
 
     // 3. Build trigger (tier 4: never cut)
     let trigger = format!(
@@ -68,6 +76,7 @@ pub async fn compile(
     let skills_text: String = skills.iter().map(|s| s.full_content.as_str()).collect::<Vec<_>>().join("\n");
     let protected_tokens = estimate_tokens(&identity)
         + estimate_tokens(&intents)
+        + estimate_tokens(&heartbeat)
         + estimate_tokens(&framing)
         + estimate_tokens(&trigger)
         + estimate_tokens(&skills_text)
@@ -115,6 +124,7 @@ pub async fn compile(
     Ok(CompiledContext {
         identity,
         intents,
+        heartbeat,
         memory,
         skills,
         retrieved,
@@ -143,6 +153,11 @@ pub fn to_prompt(ctx: &CompiledContext) -> (String, String) {
     // Priority 2: Intents (never cut)
     if !ctx.intents.is_empty() {
         system_parts.push(format!("\n# Active Intents\n{}", ctx.intents));
+    }
+
+    // Operational config (never cut)
+    if !ctx.heartbeat.is_empty() {
+        system_parts.push(format!("\n# Operational Config\n{}", ctx.heartbeat));
     }
 
     // Priority 6: Memory (may be truncated)
@@ -235,29 +250,12 @@ fn parse_skill_frontmatter(content: &str) -> (Option<String>, Option<String>, St
 
 /// Extract meaningful search terms using stop-word filtering.
 /// Also extracts multi-word phrases from backtick-quoted text and capitalized sequences.
-fn extract_terms(text: &str) -> Vec<String> {
-    let stop_words: HashSet<&str> = [
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "can", "shall", "to", "of", "in", "for",
-        "on", "with", "at", "by", "from", "as", "into", "through", "during",
-        "before", "after", "above", "below", "between", "and", "but", "or",
-        "not", "no", "nor", "so", "yet", "both", "either", "neither", "each",
-        "every", "all", "any", "few", "more", "most", "other", "some", "such",
-        "than", "too", "very", "just", "about", "up", "out", "if", "then",
-        "that", "this", "these", "those", "what", "which", "who", "whom",
-        "how", "when", "where", "why", "it", "its", "he", "she", "they",
-        "them", "his", "her", "their", "my", "your", "our", "me", "we",
-        "i", "you", "him", "us",
-    ]
-    .into_iter()
-    .collect();
-
+fn extract_terms(input: &str) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut result = Vec::new();
 
     // Extract backtick-quoted phrases as compound terms (e.g. `billing migration`)
-    for cap in regex::Regex::new(r"`([^`]+)`").unwrap().captures_iter(text) {
+    for cap in regex::Regex::new(r"`([^`]+)`").unwrap().captures_iter(input) {
         let phrase = cap[1].trim().to_lowercase();
         if phrase.len() > 2 && seen.insert(phrase.clone()) {
             result.push(phrase);
@@ -265,7 +263,7 @@ fn extract_terms(text: &str) -> Vec<String> {
     }
 
     // Extract individual words
-    let cleaned: String = text
+    let cleaned: String = input
         .chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '-' || c.is_whitespace() {
@@ -278,7 +276,7 @@ fn extract_terms(text: &str) -> Vec<String> {
 
     for word in cleaned.split_whitespace() {
         let lower = word.to_lowercase();
-        if lower.len() > 2 && !stop_words.contains(lower.as_str()) && seen.insert(lower.clone()) {
+        if lower.len() > 2 && !text::is_stop_word(&lower) && seen.insert(lower.clone()) {
             result.push(lower);
         }
     }
@@ -291,7 +289,11 @@ fn truncate_keep_tail(text: &str, max_chars: usize) -> String {
     if text.len() <= max_chars {
         return text.to_string();
     }
-    let start = text.len() - max_chars;
+    // Find a valid char boundary near the start of the tail window
+    let mut start = text.len().saturating_sub(max_chars);
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
     // Find next newline to avoid splitting mid-line
     let start = text[start..].find('\n').map(|i| start + i + 1).unwrap_or(start);
     format!("[...earlier entries truncated]\n{}", &text[start..])
@@ -302,8 +304,13 @@ fn truncate_keep_head(text: &str, max_chars: usize) -> String {
     if text.len() <= max_chars {
         return text.to_string();
     }
+    // Find a valid char boundary at or before max_chars
+    let mut end = max_chars;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
     // Find last newline before limit to avoid splitting mid-line
-    let end = text[..max_chars].rfind('\n').unwrap_or(max_chars);
+    let end = text[..end].rfind('\n').unwrap_or(end);
     format!("{}\n[...truncated]", &text[..end])
 }
 
@@ -347,6 +354,142 @@ pub fn compress_intents(intents: &str, max_tokens: usize) -> String {
     truncate_keep_head(&structural_text, max_chars)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── extract_terms ──
+
+    #[test]
+    fn extract_terms_filters_stop_words() {
+        let terms = extract_terms("the quick brown fox and the lazy dog");
+        assert!(terms.contains(&"quick".to_string()));
+        assert!(terms.contains(&"brown".to_string()));
+        assert!(!terms.contains(&"the".to_string()));
+        assert!(!terms.contains(&"and".to_string()));
+    }
+
+    #[test]
+    fn extract_terms_backtick_phrases() {
+        let terms = extract_terms("check `billing migration` and `api team`");
+        assert!(terms.contains(&"billing migration".to_string()));
+        assert!(terms.contains(&"api team".to_string()));
+    }
+
+    #[test]
+    fn extract_terms_deduplicates() {
+        let terms = extract_terms("deploy deploy deploy");
+        let deploy_count = terms.iter().filter(|t| *t == "deploy").count();
+        assert_eq!(deploy_count, 1);
+    }
+
+    #[test]
+    fn extract_terms_strips_punctuation() {
+        let terms = extract_terms("what's the status of PROJECT-123?");
+        // Punctuation becomes spaces, so "what's" → "what s"
+        assert!(!terms.iter().any(|t| t.contains('?')));
+    }
+
+    // ── truncate_keep_tail ──
+
+    #[test]
+    fn truncate_tail_short_text() {
+        let text = "line 1\nline 2";
+        assert_eq!(truncate_keep_tail(text, 100), text);
+    }
+
+    #[test]
+    fn truncate_tail_keeps_recent() {
+        let text = "old line 1\nold line 2\nnew line 3\nnew line 4";
+        let result = truncate_keep_tail(text, 25);
+        assert!(result.contains("new line"));
+        assert!(result.starts_with("[...earlier entries truncated]"));
+    }
+
+    // ── truncate_keep_head ──
+
+    #[test]
+    fn truncate_head_short_text() {
+        let text = "line 1\nline 2";
+        assert_eq!(truncate_keep_head(text, 100), text);
+    }
+
+    #[test]
+    fn truncate_head_keeps_beginning() {
+        let text = "# Header\n- item 1\n- item 2\n\nLong paragraph that goes on and on and on";
+        let result = truncate_keep_head(text, 30);
+        assert!(result.contains("# Header"));
+        assert!(result.ends_with("\n[...truncated]"));
+    }
+
+    // ── compress_intents ──
+
+    #[test]
+    fn compress_intents_short() {
+        let intents = "# Priorities\n- Ship billing\n- Fix auth bug";
+        assert_eq!(compress_intents(intents, 500), intents);
+    }
+
+    #[test]
+    fn compress_intents_keeps_structure() {
+        let mut intents = String::from("# Priorities\n- Ship billing\n- Fix auth bug\n");
+        // Add enough prose to exceed the budget
+        for i in 0..50 {
+            intents.push_str(&format!("This is paragraph {} with lots of detail about nothing important at all.\n", i));
+        }
+        let result = compress_intents(&intents, 100); // ~100 tokens = ~400 chars
+        assert!(result.contains("# Priorities"));
+        assert!(result.contains("- Ship billing"));
+    }
+
+    // ── parse_skill_frontmatter ──
+
+    #[test]
+    fn parse_skill_with_frontmatter() {
+        let content = "---\nname: summarize\ndescription: Summarize threads\n---\n\n# Summarize\n\nDo the thing.";
+        let (name, desc, body) = parse_skill_frontmatter(content);
+        assert_eq!(name.unwrap(), "summarize");
+        assert_eq!(desc.unwrap(), "Summarize threads");
+        assert!(body.contains("# Summarize"));
+    }
+
+    #[test]
+    fn parse_skill_without_frontmatter() {
+        let content = "# Just a skill\n\nNo frontmatter here.";
+        let (name, desc, body) = parse_skill_frontmatter(content);
+        assert!(name.is_none());
+        assert!(desc.is_none());
+        assert_eq!(body, content);
+    }
+
+    // ── infer_audience ──
+
+    #[test]
+    fn audience_engineering() {
+        assert!(matches!(infer_audience("platform-eng", false), Audience::Engineering));
+        assert!(matches!(infer_audience("backend-dev", false), Audience::Engineering));
+        assert!(matches!(infer_audience("sre-oncall", false), Audience::Engineering));
+    }
+
+    #[test]
+    fn audience_executive() {
+        assert!(matches!(infer_audience("exec-updates", false), Audience::Executive));
+        assert!(matches!(infer_audience("leadership", false), Audience::Executive));
+    }
+
+    #[test]
+    fn audience_team_default() {
+        assert!(matches!(infer_audience("random", false), Audience::Team));
+        assert!(matches!(infer_audience("general", false), Audience::Team));
+    }
+
+    #[test]
+    fn audience_direct_from_is_dm() {
+        assert!(matches!(infer_audience("D0123456789", true), Audience::Direct));
+        assert!(matches!(infer_audience("anything", true), Audience::Direct));
+    }
+}
+
 /// Audience type inferred from channel name conventions.
 #[derive(Debug, Clone, Copy)]
 enum Audience {
@@ -360,8 +503,12 @@ enum Audience {
     Direct,
 }
 
-/// Infer audience from Slack channel name patterns.
-fn infer_audience(channel_name: &str) -> Audience {
+/// Infer audience from channel name patterns and DM flag.
+fn infer_audience(channel_name: &str, is_dm: bool) -> Audience {
+    if is_dm {
+        return Audience::Direct;
+    }
+
     let lower = channel_name.to_lowercase();
 
     // Engineering patterns
@@ -380,16 +527,11 @@ fn infer_audience(channel_name: &str) -> Audience {
         return Audience::Executive;
     }
 
-    // DM channels start with D in Slack
-    if lower.starts_with('d') && lower.len() > 8 && lower.chars().all(|c| c.is_alphanumeric()) {
-        return Audience::Direct;
-    }
-
     Audience::Team
 }
 
-fn build_framing(task_type: TaskType, channel: &str) -> String {
-    let audience = infer_audience(channel);
+fn build_framing(task_type: TaskType, channel: &str, is_dm: bool) -> String {
+    let audience = infer_audience(channel, is_dm);
 
     let task_framing = match task_type {
         TaskType::Respond => "You're responding to a live message.",
@@ -421,7 +563,11 @@ fn build_framing(task_type: TaskType, channel: &str) -> String {
         "This message is from channel {channel}.\n\n\
          {task_framing}\n\n\
          {audience_framing}\n\n\
-         Use the tools available to you. Only say things you actually know. \
+         Use the tools available to you. You can call multiple tools at once — for example, \
+         react AND reply, or react AND dm_user. Match the tool to what's being asked: \
+         if someone asks for a DM, use dm_user; if someone asks a question, use reply; \
+         if something just needs acknowledgment, react is fine on its own.\n\n\
+         Only say things you actually know. \
          Never fabricate people, projects, or facts. If you don't have context, say so."
     )
 }

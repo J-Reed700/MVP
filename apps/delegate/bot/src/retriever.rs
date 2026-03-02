@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct RetrievalResult {
+    #[allow(dead_code)]
     pub file: PathBuf,
     pub relative_path: String,
     pub matches: Vec<MatchedLine>,
@@ -14,6 +15,7 @@ pub struct RetrievalResult {
 #[derive(Debug, Clone)]
 pub struct MatchedLine {
     pub line_number: usize,
+    #[allow(dead_code)]
     pub content: String,
     pub context: String,
 }

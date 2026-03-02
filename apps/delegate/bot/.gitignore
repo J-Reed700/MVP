@@ -1,1 +1,3 @@
 target/
+.env
+workspace/cron_state.json

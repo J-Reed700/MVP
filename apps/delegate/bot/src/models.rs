@@ -130,19 +130,7 @@ async fn complete_anthropic(api_key: &str, opts: CompleteOptions) -> Result<Mode
     });
 
     if let Some(tools) = &opts.tools {
-        // Convert OpenAI-style tool defs to Anthropic format
-        let anthropic_tools: Vec<Value> = tools
-            .iter()
-            .filter_map(|t| {
-                let func = t.get("function")?;
-                Some(serde_json::json!({
-                    "name": func["name"],
-                    "description": func["description"],
-                    "input_schema": func["parameters"]
-                }))
-            })
-            .collect();
-        body["tools"] = serde_json::json!(anthropic_tools);
+        body["tools"] = serde_json::json!(to_anthropic_tools(tools));
     }
 
     let client = reqwest::Client::builder()
@@ -169,34 +157,7 @@ async fn complete_anthropic(api_key: &str, opts: CompleteOptions) -> Result<Mode
         return Err(anyhow!("Anthropic API error ({}): {}", status, err_msg));
     }
 
-    let mut content = String::new();
-    let mut tool_calls = Vec::new();
-
-    if let Some(blocks) = resp_body["content"].as_array() {
-        for block in blocks {
-            match block["type"].as_str() {
-                Some("text") => {
-                    if let Some(text) = block["text"].as_str() {
-                        if !content.is_empty() {
-                            content.push('\n');
-                        }
-                        content.push_str(text);
-                    }
-                }
-                Some("tool_use") => {
-                    if let Some(name) = block["name"].as_str() {
-                        tool_calls.push(ToolCall {
-                            id: block["id"].as_str().unwrap_or("").to_string(),
-                            name: name.to_string(),
-                            arguments: block["input"].clone(),
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
+    let (content, tool_calls) = parse_anthropic_response(&resp_body);
     let input_tokens = resp_body["usage"]["input_tokens"].as_u64().unwrap_or(0);
     let output_tokens = resp_body["usage"]["output_tokens"].as_u64().unwrap_or(0);
 
@@ -272,22 +233,7 @@ async fn complete_openai(api_key: &str, opts: CompleteOptions) -> Result<ModelRe
     }
 
     let message = &resp_body["choices"][0]["message"];
-
-    let content = message["content"].as_str().unwrap_or("").to_string();
-
-    let mut tool_calls = Vec::new();
-    if let Some(calls) = message["tool_calls"].as_array() {
-        for call in calls {
-            if let Some(func) = call.get("function") {
-                let id = call["id"].as_str().unwrap_or("").to_string();
-                let name = func["name"].as_str().unwrap_or("").to_string();
-                let args_str = func["arguments"].as_str().unwrap_or("{}");
-                let arguments: Value =
-                    serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
-                tool_calls.push(ToolCall { id, name, arguments });
-            }
-        }
-    }
+    let (content, tool_calls) = parse_openai_message(message);
 
     let input_tokens = resp_body["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
     let output_tokens = resp_body["usage"]["completion_tokens"]
@@ -357,21 +303,7 @@ async fn chat_openai(api_key: &str, opts: ChatOptions) -> Result<ModelResponse> 
     }
 
     let message = &resp_body["choices"][0]["message"];
-    let content = message["content"].as_str().unwrap_or("").to_string();
-
-    let mut tool_calls = Vec::new();
-    if let Some(calls) = message["tool_calls"].as_array() {
-        for call in calls {
-            if let Some(func) = call.get("function") {
-                let id = call["id"].as_str().unwrap_or("").to_string();
-                let name = func["name"].as_str().unwrap_or("").to_string();
-                let args_str = func["arguments"].as_str().unwrap_or("{}");
-                let arguments: Value =
-                    serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
-                tool_calls.push(ToolCall { id, name, arguments });
-            }
-        }
-    }
+    let (content, tool_calls) = parse_openai_message(message);
 
     let input_tokens = resp_body["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
     let output_tokens = resp_body["usage"]["completion_tokens"]
@@ -408,18 +340,7 @@ async fn chat_anthropic(api_key: &str, opts: ChatOptions) -> Result<ModelRespons
     });
 
     if let Some(tools) = &opts.tools {
-        let anthropic_tools: Vec<Value> = tools
-            .iter()
-            .filter_map(|t| {
-                let func = t.get("function")?;
-                Some(serde_json::json!({
-                    "name": func["name"],
-                    "description": func["description"],
-                    "input_schema": func["parameters"]
-                }))
-            })
-            .collect();
-        body["tools"] = serde_json::json!(anthropic_tools);
+        body["tools"] = serde_json::json!(to_anthropic_tools(tools));
     }
 
     let client = reqwest::Client::builder()
@@ -446,34 +367,7 @@ async fn chat_anthropic(api_key: &str, opts: ChatOptions) -> Result<ModelRespons
         return Err(anyhow!("Anthropic API error ({}): {}", status, err_msg));
     }
 
-    let mut content = String::new();
-    let mut tool_calls = Vec::new();
-
-    if let Some(blocks) = resp_body["content"].as_array() {
-        for block in blocks {
-            match block["type"].as_str() {
-                Some("text") => {
-                    if let Some(text) = block["text"].as_str() {
-                        if !content.is_empty() {
-                            content.push('\n');
-                        }
-                        content.push_str(text);
-                    }
-                }
-                Some("tool_use") => {
-                    if let Some(name) = block["name"].as_str() {
-                        tool_calls.push(ToolCall {
-                            id: block["id"].as_str().unwrap_or("").to_string(),
-                            name: name.to_string(),
-                            arguments: block["input"].clone(),
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
+    let (content, tool_calls) = parse_anthropic_response(&resp_body);
     let input_tokens = resp_body["usage"]["input_tokens"].as_u64().unwrap_or(0);
     let output_tokens = resp_body["usage"]["output_tokens"].as_u64().unwrap_or(0);
 
@@ -559,6 +453,235 @@ fn convert_messages_to_anthropic(messages: &[Value]) -> Vec<Value> {
 /// Rough token count estimate. Uses ~4 chars per token heuristic.
 pub fn estimate_tokens(text: &str) -> usize {
     (text.len() + 3) / 4
+}
+
+// ── Shared response parsers ────────────────────────────────────────────
+
+/// Parse content text and tool_use blocks from an Anthropic API response body.
+fn parse_anthropic_response(resp_body: &Value) -> (String, Vec<ToolCall>) {
+    let mut content = String::new();
+    let mut tool_calls = Vec::new();
+
+    if let Some(blocks) = resp_body["content"].as_array() {
+        for block in blocks {
+            match block["type"].as_str() {
+                Some("text") => {
+                    if let Some(text) = block["text"].as_str() {
+                        if !content.is_empty() {
+                            content.push('\n');
+                        }
+                        content.push_str(text);
+                    }
+                }
+                Some("tool_use") => {
+                    if let Some(name) = block["name"].as_str() {
+                        tool_calls.push(ToolCall {
+                            id: block["id"].as_str().unwrap_or("").to_string(),
+                            name: name.to_string(),
+                            arguments: block["input"].clone(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    (content, tool_calls)
+}
+
+/// Parse content and tool calls from an OpenAI message object.
+fn parse_openai_message(message: &Value) -> (String, Vec<ToolCall>) {
+    let content = message["content"].as_str().unwrap_or("").to_string();
+
+    let mut tool_calls = Vec::new();
+    if let Some(calls) = message["tool_calls"].as_array() {
+        for call in calls {
+            if let Some(func) = call.get("function") {
+                let id = call["id"].as_str().unwrap_or("").to_string();
+                let name = func["name"].as_str().unwrap_or("").to_string();
+                let args_str = func["arguments"].as_str().unwrap_or("{}");
+                let arguments: Value =
+                    serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+                tool_calls.push(ToolCall { id, name, arguments });
+            }
+        }
+    }
+
+    (content, tool_calls)
+}
+
+/// Convert OpenAI-style tool definitions to Anthropic format.
+fn to_anthropic_tools(tools: &[Value]) -> Vec<Value> {
+    tools
+        .iter()
+        .filter_map(|t| {
+            let func = t.get("function")?;
+            Some(serde_json::json!({
+                "name": func["name"],
+                "description": func["description"],
+                "input_schema": func["parameters"]
+            }))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_anthropic_text_only() {
+        let resp = serde_json::json!({
+            "content": [
+                {"type": "text", "text": "Hello world"}
+            ]
+        });
+        let (content, tools) = parse_anthropic_response(&resp);
+        assert_eq!(content, "Hello world");
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn parse_anthropic_with_tool_use() {
+        let resp = serde_json::json!({
+            "content": [
+                {"type": "text", "text": "Let me react."},
+                {
+                    "type": "tool_use",
+                    "id": "tu_123",
+                    "name": "react",
+                    "input": {"emoji": "thumbsup"}
+                }
+            ]
+        });
+        let (content, tools) = parse_anthropic_response(&resp);
+        assert_eq!(content, "Let me react.");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "react");
+        assert_eq!(tools[0].arguments["emoji"], "thumbsup");
+    }
+
+    #[test]
+    fn parse_anthropic_multiple_tools() {
+        let resp = serde_json::json!({
+            "content": [
+                {"type": "tool_use", "id": "t1", "name": "react", "input": {"emoji": "eyes"}},
+                {"type": "tool_use", "id": "t2", "name": "reply", "input": {"text": "on it"}}
+            ]
+        });
+        let (content, tools) = parse_anthropic_response(&resp);
+        assert!(content.is_empty());
+        assert_eq!(tools.len(), 2);
+    }
+
+    #[test]
+    fn parse_openai_text_only() {
+        let msg = serde_json::json!({
+            "content": "Hello from GPT",
+            "role": "assistant"
+        });
+        let (content, tools) = parse_openai_message(&msg);
+        assert_eq!(content, "Hello from GPT");
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn parse_openai_with_tool_calls() {
+        let msg = serde_json::json!({
+            "content": null,
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_abc",
+                    "type": "function",
+                    "function": {
+                        "name": "react",
+                        "arguments": "{\"emoji\": \"wave\"}"
+                    }
+                }
+            ]
+        });
+        let (content, tools) = parse_openai_message(&msg);
+        assert!(content.is_empty());
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "react");
+        assert_eq!(tools[0].arguments["emoji"], "wave");
+    }
+
+    #[test]
+    fn to_anthropic_tools_converts_format() {
+        let openai_tools = vec![serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "react",
+                "description": "Add a reaction",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"emoji": {"type": "string"}},
+                    "required": ["emoji"]
+                }
+            }
+        })];
+        let anthropic = to_anthropic_tools(&openai_tools);
+        assert_eq!(anthropic.len(), 1);
+        assert_eq!(anthropic[0]["name"], "react");
+        assert_eq!(anthropic[0]["description"], "Add a reaction");
+        assert!(anthropic[0]["input_schema"]["properties"]["emoji"].is_object());
+    }
+
+    #[test]
+    fn convert_messages_user_assistant_tool() {
+        let messages = vec![
+            serde_json::json!({"role": "user", "content": "Do something"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "react", "input": {"emoji": "eyes"}}
+                ]
+            }),
+            serde_json::json!({"role": "tool", "tool_call_id": "t1", "content": "Reacted with :eyes:"}),
+        ];
+        let converted = convert_messages_to_anthropic(&messages);
+        assert_eq!(converted.len(), 3);
+        assert_eq!(converted[0]["role"], "user");
+        assert_eq!(converted[1]["role"], "assistant");
+        // Tool results become a user message with tool_result blocks
+        assert_eq!(converted[2]["role"], "user");
+        let content = converted[2]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[0]["tool_use_id"], "t1");
+    }
+
+    #[test]
+    fn convert_messages_consecutive_tools_merged() {
+        let messages = vec![
+            serde_json::json!({"role": "tool", "tool_call_id": "t1", "content": "result 1"}),
+            serde_json::json!({"role": "tool", "tool_call_id": "t2", "content": "result 2"}),
+        ];
+        let converted = convert_messages_to_anthropic(&messages);
+        // Consecutive tool results should merge into one user message
+        assert_eq!(converted.len(), 1);
+        let content = converted[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+    }
+
+    #[test]
+    fn estimate_tokens_rough() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("abcd"), 1);
+        assert_eq!(estimate_tokens("hello world how are you"), 6); // 22 chars → (22+3)/4 = 6
+    }
+
+    #[test]
+    fn is_reasoning_model_detection() {
+        assert!(is_reasoning_model("o1-preview"));
+        assert!(is_reasoning_model("o3-mini"));
+        assert!(is_reasoning_model("o4-mini"));
+        assert!(is_reasoning_model("gpt-5"));
+        assert!(!is_reasoning_model("gpt-4o"));
+        assert!(!is_reasoning_model("claude-sonnet-4-6"));
+    }
 }
 
 /// Tool definitions for the Delegate bot.
@@ -703,7 +826,7 @@ pub fn delegate_tools() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "dm_user",
-                "description": "Send a direct message to a specific user. Use this for private nudges, approval requests, or sensitive information that shouldn't be in a public channel. The user will receive it as a DM from the bot.",
+                "description": "Send a direct message to a specific user. Use this for private nudges, approval requests, or sensitive information that shouldn't be in a public channel. The user will receive it as a DM from the bot. Always pair with a reply confirming you sent the DM (e.g. 'Done — I DM\\'d Josh.').",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -724,7 +847,7 @@ pub fn delegate_tools() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "channel_history",
-                "description": "Read recent messages from a Slack channel. Returns the most recent messages (newest first). Use this to get broader context about what's happening in a channel beyond the current thread.",
+                "description": "Read recent messages from a channel. Returns the most recent messages (newest first). Use this to get broader context about what's happening in a channel beyond the current thread.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -738,6 +861,23 @@ pub fn delegate_tools() -> Vec<Value> {
                         }
                     },
                     "required": ["channel"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup_user",
+                "description": "Search for a user by name. Returns matching user IDs and display names. Use this BEFORE dm_user when you don't have the user's ID — for example, if someone says 'DM Josh', look up 'Josh' first to get the correct user ID.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name to search for (matches against display name, real name, and username)"
+                        }
+                    },
+                    "required": ["name"]
                 }
             }
         },
