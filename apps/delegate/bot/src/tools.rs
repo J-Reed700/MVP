@@ -187,7 +187,7 @@ async fn handle_reply(args: &Value, ctx: &ToolContext<'_>) -> String {
 }
 
 async fn handle_post(args: &Value, ctx: &ToolContext<'_>) -> String {
-    let channel = match require_str(args, "channel") {
+    let channel_input = match require_str(args, "channel") {
         Ok(c) => c,
         Err(e) => return e,
     };
@@ -195,8 +195,18 @@ async fn handle_post(args: &Value, ctx: &ToolContext<'_>) -> String {
         Ok(t) => t,
         Err(e) => return e,
     };
-    match ctx.messenger.post_message(channel, text, None).await {
-        Ok(_) => format!("Posted to {channel}"),
+    // Accept either a channel ID (C012345) or a channel name (general).
+    // If it doesn't look like an ID, try to resolve the name.
+    let channel_id = if channel_input.starts_with('C') || channel_input.starts_with('G') {
+        channel_input.to_string()
+    } else {
+        match ctx.messenger.resolve_channel_id(channel_input).await {
+            Some(id) => id,
+            None => return format!("Could not resolve channel '{channel_input}'. Use a channel ID (e.g. C012345) or an exact channel name."),
+        }
+    };
+    match ctx.messenger.post_message(&channel_id, text, None).await {
+        Ok(_) => format!("Posted to {channel_input}"),
         Err(e) => format!("Failed to post: {e}"),
     }
 }
@@ -298,13 +308,22 @@ async fn handle_dm_user(args: &Value, ctx: &ToolContext<'_>) -> String {
 }
 
 async fn handle_channel_history(args: &Value, ctx: &ToolContext<'_>) -> String {
-    let channel = match require_str(args, "channel") {
+    let channel_input = match require_str(args, "channel") {
         Ok(c) => c,
         Err(e) => return e,
     };
     let count = args["count"].as_u64().unwrap_or(20).min(50) as u32;
 
-    match ctx.messenger.get_channel_history(channel, count).await {
+    let channel = if channel_input.starts_with('C') || channel_input.starts_with('G') {
+        channel_input.to_string()
+    } else {
+        match ctx.messenger.resolve_channel_id(channel_input).await {
+            Some(id) => id,
+            None => return format!("Could not resolve channel '{channel_input}'. Use a channel ID or exact name."),
+        }
+    };
+
+    match ctx.messenger.get_channel_history(&channel, count).await {
         Ok(messages) if messages.is_empty() => {
             format!("No messages found in channel {channel}")
         }
