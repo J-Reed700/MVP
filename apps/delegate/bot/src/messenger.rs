@@ -1,107 +1,67 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::event::DelegateEvent;
 
 // ── Newtypes ───────────────────────────────────────────────────────────
+//
+// These wrap platform-specific identifiers in distinct types so the compiler
+// catches mix-ups (e.g. passing a user ID where a channel ID is expected).
+// They implement Display, AsRef<str>, From<&str>, From<String>, and Serde
+// traits for ergonomic use at boundaries.
 
-/// A channel ID (e.g. "C012345" on Slack).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
-pub struct ChannelId(pub String);
+macro_rules! newtype_string {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(pub String);
 
-/// A user ID (e.g. "U012345" on Slack).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
-pub struct UserId(pub String);
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
 
-/// A message timestamp (e.g. "1234567890.123456" on Slack).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
-pub struct MessageTs(pub String);
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str { &self.0 }
+        }
 
-impl std::fmt::Display for ChannelId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
+        impl std::ops::Deref for $name {
+            type Target = str;
+            fn deref(&self) -> &str { &self.0 }
+        }
+
+        impl $name {
+            pub fn as_str(&self) -> &str { &self.0 }
+        }
+
+        impl From<&str> for $name {
+            fn from(s: &str) -> Self { Self(s.to_string()) }
+        }
+
+        impl From<String> for $name {
+            fn from(s: String) -> Self { Self(s) }
+        }
+    };
 }
 
-impl std::fmt::Display for UserId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
+newtype_string! {
+    /// A channel ID (e.g. "C012345" on Slack).
+    ChannelId
 }
 
-impl std::fmt::Display for MessageTs {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
+newtype_string! {
+    /// A user ID (e.g. "U012345" on Slack).
+    UserId
 }
 
-#[allow(dead_code)]
-impl ChannelId {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[allow(dead_code)]
-impl UserId {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// Validate that this looks like a valid user ID.
-    /// Platform-specific validation should go through `Transport::is_valid_user_id()`.
-    pub fn is_valid_id(&self) -> bool {
-        !self.0.is_empty()
-    }
-}
-
-#[allow(dead_code)]
-impl MessageTs {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-// Allow &str → newtype conversions for ergonomic use at boundaries
-impl From<&str> for ChannelId {
-    fn from(s: &str) -> Self {
-        Self(s.to_string())
-    }
-}
-
-impl From<String> for ChannelId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-impl From<&str> for UserId {
-    fn from(s: &str) -> Self {
-        Self(s.to_string())
-    }
-}
-
-impl From<String> for UserId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-impl From<&str> for MessageTs {
-    fn from(s: &str) -> Self {
-        Self(s.to_string())
-    }
-}
-
-impl From<String> for MessageTs {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
+newtype_string! {
+    /// A message timestamp (e.g. "1234567890.123456" on Slack).
+    MessageTs
 }
 
 // ── Message types ──────────────────────────────────────────────────────

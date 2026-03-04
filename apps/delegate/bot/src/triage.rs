@@ -40,7 +40,7 @@ pub fn tier0_classify(
     watched_channels: Option<&std::collections::HashSet<String>>,
 ) -> Option<TriageLabel> {
     // Ignore messages from the bot itself
-    if transport.is_self_message(&event.user) {
+    if transport.is_self_message(event.user.as_str()) {
         return Some(TriageLabel::Ignore);
     }
 
@@ -59,7 +59,7 @@ pub fn tier0_classify(
     // Channel watch-list filtering: if a watch list is configured, only process
     // events from channels in the set. Direct @mentions already bypassed above.
     if let Some(watched) = watched_channels {
-        if !watched.is_empty() && !watched.contains(&event.channel) {
+        if !watched.is_empty() && !watched.contains(event.channel.as_str()) {
             return Some(TriageLabel::Ignore);
         }
     }
@@ -208,13 +208,14 @@ mod tests {
     }
 
     fn make_event(event_type: &str, channel: &str, user: &str, content: &str) -> DelegateEvent {
+        use crate::messenger::{ChannelId, UserId, MessageTs};
         DelegateEvent {
             id: "1234".to_string(),
             event_type: event_type.to_string(),
-            channel: channel.to_string(),
-            user: user.to_string(),
+            channel: ChannelId::from(channel),
+            user: UserId::from(user),
             content: content.to_string(),
-            timestamp: "1234567890.123456".to_string(),
+            timestamp: MessageTs::from("1234567890.123456"),
             thread_ts: None,
             raw: serde_json::Value::Null,
         }

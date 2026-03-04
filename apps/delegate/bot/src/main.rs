@@ -25,7 +25,7 @@ use tracing::{debug, error, info, warn};
 use budget::TokenBudget;
 use context::TaskType;
 use event::DelegateEvent;
-use messenger::{Messenger, Transport};
+use messenger::{ChannelId, Messenger, MessageTs, Transport, UserId};
 use models::{delegate_tools, ChatOptions, CompleteOptions, ModelClient};
 use slack::SlackSocket;
 use tool_loop::ToolLoopConfig;
@@ -342,19 +342,19 @@ async fn handle_event(
 
     // Budget check for full reasoning
     if !budget.is_available().await {
-        logger::append_log(ws.path(), &event.channel, &event.user, &format!("[log-only] {}", event.content)).await?;
-        notify_budget_exhausted(messenger, budget, &event.channel, notification_channel, ws).await;
+        logger::append_log(ws.path(), event.channel.as_str(), event.user.as_str(), &format!("[log-only] {}", event.content)).await?;
+        notify_budget_exhausted(messenger, budget, event.channel.as_str(), notification_channel, ws).await;
         return Ok(());
     }
 
     // Assemble context
-    let thread_ts = event.thread_ts.as_deref().unwrap_or(&event.timestamp);
-    let user_name = messenger.get_user_name(&event.user).await;
+    let thread_ts = event.thread_ts.as_deref().unwrap_or(event.timestamp.as_str());
+    let user_name = messenger.get_user_name(event.user.as_str()).await;
     let thread_context = fetch_thread_context(&event, messenger, thread_ts).await;
-    let channel_name = messenger.get_channel_name(&event.channel).await;
+    let channel_name = messenger.get_channel_name(event.channel.as_str()).await;
     let recent_logs = logger::read_recent_logs(ws.path()).await;
 
-    let is_dm = transport.is_dm_channel(&event.channel);
+    let is_dm = transport.is_dm_channel(event.channel.as_str());
     let mut compiled = context::compile(
         &event, ws.path(), TaskType::Respond, &recent_logs, 8000, Some(&channel_name), is_dm,
     ).await?;
@@ -389,7 +389,7 @@ async fn handle_event(
     event_tokens += response.input_tokens + response.output_tokens;
     let within_budget = budget.record(response.input_tokens + response.output_tokens).await;
     if !within_budget {
-        notify_budget_exhausted(messenger, budget, &event.channel, notification_channel, ws).await;
+        notify_budget_exhausted(messenger, budget, event.channel.as_str(), notification_channel, ws).await;
     }
 
     // Multi-turn tool loop with approval workflow
@@ -414,13 +414,13 @@ async fn handle_event(
 
     // Post text content if model didn't use reply tool
     if !final_content.is_empty() && !has_reply {
-        messenger.post_message(&event.channel, &final_content, Some(thread_ts)).await?;
+        messenger.post_message(event.channel.as_str(), &final_content, Some(thread_ts)).await?;
     }
 
     // Post italic notice for silent tool executions
     if !silent_actions.is_empty() && !has_reply {
         let notice = format!("_{}_", silent_actions.join("; "));
-        let _ = messenger.post_message(&event.channel, &notice, Some(thread_ts)).await;
+        let _ = messenger.post_message(event.channel.as_str(), &notice, Some(thread_ts)).await;
     }
 
     // Log the interaction
@@ -464,7 +464,7 @@ async fn run_triage(
             TriageLabel::ActNow => return Ok(Some(0)),
             TriageLabel::Queue => {
                 logger::append_log(
-                    ws.path(), &event.channel, &event.user,
+                    ws.path(), event.channel.as_str(), event.user.as_str(),
                     &format!("[queued] {}", event.content),
                 ).await?;
                 return Ok(None);
@@ -475,7 +475,7 @@ async fn run_triage(
     // Tier 1 (LLM-based) — requires budget
     if !budget.is_available().await {
         logger::append_log(
-            ws.path(), &event.channel, &event.user,
+            ws.path(), event.channel.as_str(), event.user.as_str(),
             &format!("[log-only] {}", event.content),
         ).await?;
         return Ok(None);
@@ -491,12 +491,12 @@ async fn run_triage(
 
     match label {
         TriageLabel::Ignore => {
-            logger::append_log(ws.path(), &event.channel, &event.user, &event.content).await?;
+            logger::append_log(ws.path(), event.channel.as_str(), event.user.as_str(), &event.content).await?;
             Ok(None)
         }
         TriageLabel::Queue => {
             logger::append_log(
-                ws.path(), &event.channel, &event.user,
+                ws.path(), event.channel.as_str(), event.user.as_str(),
                 &format!("[queued] {}", event.content),
             ).await?;
             Ok(None)
@@ -514,13 +514,13 @@ async fn fetch_thread_context(
     if event.thread_ts.is_none() {
         return String::new();
     }
-    let messages = match messenger.get_thread(&event.channel, thread_ts).await {
+    let messages = match messenger.get_thread(event.channel.as_str(), thread_ts).await {
         Ok(m) => m,
         Err(_) => return String::new(),
     };
     let mut lines = Vec::new();
     for msg in &messages {
-        if msg.timestamp != event.timestamp {
+        if msg.timestamp != *event.timestamp {
             let name = messenger.get_user_name(&msg.user_id).await;
             lines.push(format!("<{name}> {}", msg.text));
         }
@@ -792,8 +792,8 @@ async fn process_heartbeat_batch(
     let heartbeat_event = DelegateEvent {
         id: "heartbeat".to_string(),
         event_type: "heartbeat".to_string(),
-        channel: "internal".to_string(),
-        user: "system".to_string(),
+        channel: ChannelId::from("internal"),
+        user: UserId::from("system"),
         content: format!(
             "Heartbeat tick. {entry_count} new log entries since last check ({queued_count} queued for batch review).\n\n\
              Review these entries as a batch. Look for:\n\
@@ -805,7 +805,7 @@ async fn process_heartbeat_batch(
              Use dm_user only for approval escalations or urgent notifications.\n\n\
              Entries:\n{new_entries}"
         ),
-        timestamp: chrono::Local::now().format("%s").to_string(),
+        timestamp: MessageTs::from(chrono::Local::now().format("%s").to_string()),
         thread_ts: None,
         raw: serde_json::json!({}),
     };
@@ -1050,10 +1050,10 @@ async fn run_cron_job(
     let cron_event = DelegateEvent {
         id: format!("cron-{}", job.name),
         event_type: "cron".to_string(),
-        channel: channel_id.clone(),
-        user: "system".to_string(),
+        channel: ChannelId::from(channel_id.as_str()),
+        user: UserId::from("system"),
         content: format!("Scheduled output: {}. Compile and post.", job.name),
-        timestamp: now.format("%s").to_string(),
+        timestamp: MessageTs::from(now.format("%s").to_string()),
         thread_ts: None,
         raw: serde_json::json!({}),
     };

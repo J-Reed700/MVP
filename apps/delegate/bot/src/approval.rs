@@ -6,7 +6,7 @@ use tracing::{info, warn};
 
 use crate::event::DelegateEvent;
 use crate::heartbeat::HeartbeatConfig;
-use crate::messenger::Messenger;
+use crate::messenger::{ChannelId, Messenger, MessageTs, UserId};
 use crate::models::ToolCall;
 use crate::workspace::Workspace;
 
@@ -226,7 +226,7 @@ pub async fn handle_reaction(
     let reaction = event.content.trim_matches(':');
 
     // Targeted lookup instead of loading all pending files
-    let mut action = match find_by_dm(ws.path(), &event.channel, &event.timestamp).await {
+    let mut action = match find_by_dm(ws.path(), event.channel.as_str(), event.timestamp.as_str()).await {
         Some(a) => a,
         None => return Ok(false),
     };
@@ -250,11 +250,11 @@ pub async fn handle_reaction(
         let synthetic_event = DelegateEvent {
             id: action.id.clone(),
             event_type: "approval".to_string(),
-            channel: action.trigger_channel.clone(),
-            user: action.requester.clone(),
+            channel: ChannelId::from(action.trigger_channel.as_str()),
+            user: UserId::from(action.requester.as_str()),
             content: String::new(),
-            timestamp: action.trigger_ts.clone(),
-            thread_ts: action.thread_ts.clone(),
+            timestamp: MessageTs::from(action.trigger_ts.as_str()),
+            thread_ts: action.thread_ts.as_deref().map(MessageTs::from),
             raw: Value::Null,
         };
         let thread_ts = action
@@ -269,7 +269,7 @@ pub async fn handle_reaction(
         };
         let result = crate::tools::execute_tool(&tool_call, &ctx).await;
 
-        let approver_name = messenger.get_user_name(&event.user).await;
+        let approver_name = messenger.get_user_name(event.user.as_str()).await;
         let _ = messenger
             .post_message(
                 &action.trigger_channel,
@@ -299,7 +299,7 @@ pub async fn handle_reaction(
             .thread_ts
             .as_deref()
             .unwrap_or(&action.trigger_ts);
-        let rejector_name = messenger.get_user_name(&event.user).await;
+        let rejector_name = messenger.get_user_name(event.user.as_str()).await;
         let _ = messenger
             .post_message(
                 &action.trigger_channel,

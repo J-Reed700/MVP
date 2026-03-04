@@ -63,7 +63,7 @@ pub async fn compile(
 
     // 2. Build framing (tier 3: never cut)
     // Use resolved channel name for audience inference, fall back to channel ID
-    let channel_for_framing = channel_name.unwrap_or(&event.channel);
+    let channel_for_framing = channel_name.unwrap_or(event.channel.as_str());
     let framing = build_framing(task_type, channel_for_framing, is_dm);
 
     // 3. Build trigger (tier 4: never cut)

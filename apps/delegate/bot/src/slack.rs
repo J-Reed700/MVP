@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 use tracing as _;
 
 use crate::event::DelegateEvent;
-use crate::messenger::{ChatMessage, Messenger, SentMessage, Transport};
+use crate::messenger::{ChannelId, ChatMessage, Messenger, MessageTs, SentMessage, Transport, UserId};
 
 /// Slack Socket Mode client.
 /// Connects via WebSocket, receives events, sends acknowledgments.
@@ -642,29 +642,29 @@ impl SlackSocket {
             }
         }
 
-        let channel = event.get("channel")?.as_str()?.to_string();
-        let user = event
+        let channel: ChannelId = event.get("channel")?.as_str()?.into();
+        let user: UserId = event
             .get("user")
             .and_then(|u| u.as_str())
             .unwrap_or("unknown")
-            .to_string();
+            .into();
         let text = event
             .get("text")
             .and_then(|t| t.as_str())
             .unwrap_or("")
             .to_string();
-        let ts = event
+        let ts: MessageTs = event
             .get("ts")
             .and_then(|t| t.as_str())
             .unwrap_or("")
-            .to_string();
-        let thread_ts = event
+            .into();
+        let thread_ts: Option<MessageTs> = event
             .get("thread_ts")
             .and_then(|t| t.as_str())
-            .map(|s| s.to_string());
+            .map(|s| s.into());
 
         Some(DelegateEvent {
-            id: ts.clone(),
+            id: ts.0.clone(),
             event_type: event_type.to_string(),
             channel,
             user,
@@ -676,26 +676,25 @@ impl SlackSocket {
     }
 
     fn normalize_reaction(event: &Value) -> Option<DelegateEvent> {
-        let user = event.get("user")?.as_str()?.to_string();
+        let user: UserId = event.get("user")?.as_str()?.into();
         let reaction = event
             .get("reaction")
             .and_then(|r| r.as_str())
-            .unwrap_or("")
-            .to_string();
+            .unwrap_or("");
         let item = event.get("item")?;
-        let channel = item
+        let channel: ChannelId = item
             .get("channel")
             .and_then(|c| c.as_str())
             .unwrap_or("")
-            .to_string();
-        let ts = item
+            .into();
+        let ts: MessageTs = item
             .get("ts")
             .and_then(|t| t.as_str())
             .unwrap_or("")
-            .to_string();
+            .into();
 
         Some(DelegateEvent {
-            id: format!("reaction-{ts}"),
+            id: format!("reaction-{}", ts),
             event_type: "reaction_added".to_string(),
             channel,
             user,
@@ -765,8 +764,8 @@ mod tests {
         });
         let event = t.normalize_event(&envelope).unwrap();
         assert_eq!(event.event_type, "message");
-        assert_eq!(event.channel, "C123");
-        assert_eq!(event.user, "U456");
+        assert_eq!(event.channel.as_str(), "C123");
+        assert_eq!(event.user.as_str(), "U456");
         assert_eq!(event.content, "hello world");
     }
 
@@ -858,7 +857,7 @@ mod tests {
             }
         });
         let event = t.normalize_event(&envelope).unwrap();
-        assert_eq!(event.thread_ts.as_deref(), Some("1111.000"));
+        assert_eq!(event.thread_ts.as_ref().map(|ts| ts.as_str()), Some("1111.000"));
     }
 
     #[test]

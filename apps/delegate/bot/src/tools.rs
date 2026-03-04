@@ -163,7 +163,7 @@ async fn handle_react(args: &Value, ctx: &ToolContext<'_>) -> String {
     let emoji = args["emoji"].as_str().unwrap_or("eyes");
     match ctx
         .messenger
-        .add_reaction(&ctx.event.channel, &ctx.event.timestamp, emoji)
+        .add_reaction(ctx.event.channel.as_str(), ctx.event.timestamp.as_str(), emoji)
         .await
     {
         Ok(_) => format!("Reacted with :{emoji}:"),
@@ -178,7 +178,7 @@ async fn handle_reply(args: &Value, ctx: &ToolContext<'_>) -> String {
     };
     match ctx
         .messenger
-        .post_message(&ctx.event.channel, text, Some(ctx.thread_ts))
+        .post_message(ctx.event.channel.as_str(), text, Some(ctx.thread_ts))
         .await
     {
         Ok(_) => "Reply posted".to_string(),
