@@ -796,12 +796,14 @@ async fn process_heartbeat_batch(
         user: UserId::from("system"),
         content: format!(
             "Heartbeat tick. {entry_count} new log entries since last check ({queued_count} queued for batch review).\n\n\
-             Review these entries as a batch. Look for:\n\
-             - Patterns across multiple signals (same topic from different people/channels)\n\
-             - Queued items [queued] that individually seemed routine but together suggest something worth flagging\n\
-             - Connections to active intents that weren't obvious at triage time\n\
-             - Anything that warrants proactive action\n\n\
-             If nothing stands out, say \"No patterns detected\" — don't force insights.\n\n\
+             Review these entries as a batch. Run these checks:\n\n\
+             **Cross-channel connections:** Are different people/channels discussing the same topic without knowing it? If so, connect them — post in the relevant channel or thread.\n\n\
+             **Stale threads:** Any question asked >2 hours ago with no answer? Any commitment made with no follow-up? Use channel_history to verify before flagging.\n\n\
+             **Blocker detection:** Look for language signaling blocks: \"waiting on\", \"blocked by\", \"can't proceed\", \"need X before\". If you spot one, surface it proactively.\n\n\
+             **Decision capture:** Did someone make a decision in passing? (\"let's go with X\", \"I think we should\", \"approved\"). Use log_decision to record it.\n\n\
+             **Pattern detection:** Do queued items [queued] that individually seemed routine form a pattern together? Same topic from different people = signal.\n\n\
+             **Intent alignment:** Do any entries connect to active intents in ways that weren't obvious at triage time?\n\n\
+             If nothing stands out, use no_action — don't force insights. Quality over quantity.\n\n\
              Use dm_user only for approval escalations or urgent notifications.\n\n\
              Entries:\n{new_entries}"
         ),
@@ -824,7 +826,7 @@ async fn process_heartbeat_batch(
         system: system.clone(),
         prompt: prompt.clone(),
         model: model_override.map(|s| s.to_string()),
-        max_tokens: Some(1024),
+        max_tokens: Some(2048),
         temperature: Some(0.5),
         tools: Some(hb_tools.clone()),
     }).await {
@@ -847,8 +849,8 @@ async fn process_heartbeat_batch(
             system,
             model: model_override.map(|s| s.to_string()),
             tools: hb_tools,
-            max_turns: 3,
-            max_tokens: 1024,
+            max_turns: 5,
+            max_tokens: 2048,
             temperature: 0.5,
         },
     )

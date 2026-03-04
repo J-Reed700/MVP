@@ -663,6 +663,38 @@ pub fn heartbeat_tools() -> Vec<Value> {
         {
             "type": "function",
             "function": {
+                "name": "channel_history",
+                "description": "Read recent messages from a channel. Use this to investigate patterns spotted in log entries — e.g. pull a channel's recent messages to check for stale threads, unresolved questions, or cross-channel connections.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "channel": { "type": "string", "description": "Channel ID to read history from" },
+                        "count": { "type": "integer", "description": "Number of messages to fetch (default 20, max 50)" }
+                    },
+                    "required": ["channel"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "log_decision",
+                "description": "Capture a decision observed in batch review. Use this when log entries reveal a decision was made — someone chose an approach, approved a plan, or set a direction.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "decision": { "type": "string", "description": "What was decided" },
+                        "reasoning": { "type": "string", "description": "Why it was decided" },
+                        "participants": { "type": "string", "description": "Who was involved" },
+                        "context": { "type": "string", "description": "Where the decision was made" }
+                    },
+                    "required": ["decision", "reasoning", "participants"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "no_action",
                 "description": "Explicitly take no action.",
                 "parameters": {
