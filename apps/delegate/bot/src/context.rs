@@ -4,6 +4,7 @@ use std::path::Path;
 
 use crate::event::DelegateEvent;
 use crate::models::estimate_tokens;
+use crate::registry::ToolScope;
 use crate::retriever::{format_retrieved_content, retrieve};
 use crate::text;
 
@@ -54,6 +55,7 @@ pub async fn compile(
     token_budget: usize,
     channel_name: Option<&str>,
     is_dm: bool,
+    scope: ToolScope,
 ) -> Result<CompiledContext> {
     // 1. Load always-on files (tiers 1-2: never cut)
     let identity = load_file(&workspace.join("IDENTITY.md")).await;
@@ -73,6 +75,7 @@ pub async fn compile(
     );
 
     // 4. Calculate protected (never-cut) token cost
+    let playbook = crate::registry::tool_playbook(scope);
     let skills_text: String = skills.iter().map(|s| s.full_content.as_str()).collect::<Vec<_>>().join("\n");
     let protected_tokens = estimate_tokens(&identity)
         + estimate_tokens(&intents)
@@ -80,6 +83,7 @@ pub async fn compile(
         + estimate_tokens(&framing)
         + estimate_tokens(&trigger)
         + estimate_tokens(&skills_text)
+        + estimate_tokens(&playbook)
         + 200; // structural overhead (headers, separators)
 
     let mut remaining = token_budget.saturating_sub(protected_tokens);
@@ -135,7 +139,7 @@ pub async fn compile(
 }
 
 /// Assemble a CompiledContext into (system_prompt, user_prompt).
-pub fn to_prompt(ctx: &CompiledContext) -> (String, String) {
+pub fn to_prompt(ctx: &CompiledContext, scope: ToolScope) -> (String, String) {
     let mut system_parts = Vec::new();
 
     // Priority 1: Identity (never cut)
@@ -149,6 +153,9 @@ pub fn to_prompt(ctx: &CompiledContext) -> (String, String) {
         skills_section.push_str("\n---\n\nWhen someone asks you to do something not listed above, say \"I can't do that yet\" and suggest what you *can* do instead.");
         system_parts.push(skills_section);
     }
+
+    // Tool Playbook — tells the model when to use each tool
+    system_parts.push(format!("\n{}", crate::registry::tool_playbook(scope)));
 
     // Priority 2: Intents (never cut)
     if !ctx.intents.is_empty() {
@@ -562,12 +569,6 @@ fn build_framing(task_type: TaskType, channel: &str, is_dm: bool) -> String {
     format!(
         "This message is from channel {channel}.\n\n\
          {task_framing}\n\n\
-         {audience_framing}\n\n\
-         Use the tools available to you. You can call multiple tools at once — for example, \
-         react AND reply, or react AND dm_user. Match the tool to what's being asked: \
-         if someone asks for a DM, use dm_user; if someone asks a question, use reply; \
-         if something just needs acknowledgment, react is fine on its own.\n\n\
-         Only say things you actually know. \
-         Never fabricate people, projects, or facts. If you don't have context, say so."
+         {audience_framing}"
     )
 }

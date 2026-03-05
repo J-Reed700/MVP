@@ -6,6 +6,7 @@ mod heartbeat;
 mod logger;
 mod messenger;
 mod models;
+mod registry;
 mod retriever;
 mod slack;
 mod text;
@@ -26,10 +27,11 @@ use budget::TokenBudget;
 use context::TaskType;
 use event::DelegateEvent;
 use messenger::{ChannelId, Messenger, MessageTs, Transport, UserId};
-use models::{delegate_tools, ChatOptions, CompleteOptions, ModelClient};
+use models::{ChatOptions, CompleteOptions, ModelClient};
+use registry::{classify_action, is_information_tool, is_reply_tool, ActionTier, ToolScope};
 use slack::SlackSocket;
 use tool_loop::ToolLoopConfig;
-use tools::{classify_action, is_information_tool, is_reply_tool, summarize_action, ActionTier, ToolContext};
+use tools::{summarize_action, ToolContext};
 use triage::TriageLabel;
 use workspace::Workspace;
 
@@ -356,7 +358,7 @@ async fn handle_event(
 
     let is_dm = transport.is_dm_channel(event.channel.as_str());
     let mut compiled = context::compile(
-        &event, ws.path(), TaskType::Respond, &recent_logs, 8000, Some(&channel_name), is_dm,
+        &event, ws.path(), TaskType::Respond, &recent_logs, 8000, Some(&channel_name), is_dm, ToolScope::Event,
     ).await?;
 
     let clean_content = transport.strip_mentions(&event.content);
@@ -366,13 +368,13 @@ async fn handle_event(
         event.user, event.timestamp
     );
 
-    let (system_prompt, mut user_prompt) = context::to_prompt(&compiled);
+    let (system_prompt, mut user_prompt) = context::to_prompt(&compiled, ToolScope::Event);
     if !thread_context.is_empty() {
         user_prompt = format!("{thread_context}\n\n---\nNew message:\n{user_prompt}");
     }
 
     // Initial LLM call
-    let tools = delegate_tools();
+    let tools = registry::event_tool_schemas();
     let model = model_override.map(|s| s.to_string());
 
     let response = client
@@ -813,14 +815,14 @@ async fn process_heartbeat_batch(
     };
 
     let compiled = match context::compile(
-        &heartbeat_event, ws.path(), TaskType::Digest, &recent_logs, config.qa_token_budget, None, false,
+        &heartbeat_event, ws.path(), TaskType::Digest, &recent_logs, config.qa_token_budget, None, false, ToolScope::Heartbeat,
     ).await {
         Ok(ctx) => ctx,
         Err(e) => { warn!("Heartbeat context assembly failed: {e}"); return; }
     };
 
-    let (system, prompt) = context::to_prompt(&compiled);
-    let hb_tools = tools::heartbeat_tools();
+    let (system, prompt) = context::to_prompt(&compiled, ToolScope::Heartbeat);
+    let hb_tools = registry::heartbeat_tool_schemas();
 
     let response = match client.complete(CompleteOptions {
         system: system.clone(),
@@ -1061,14 +1063,14 @@ async fn run_cron_job(
     };
 
     let compiled = match context::compile(
-        &cron_event, ws.path(), task_type, &recent_logs, config.qa_token_budget, Some(&job.channel), false,
+        &cron_event, ws.path(), task_type, &recent_logs, config.qa_token_budget, Some(&job.channel), false, ToolScope::Heartbeat,
     ).await {
         Ok(ctx) => ctx,
         Err(e) => { warn!(job = %job.name, "Cron context assembly failed: {e}"); return; }
     };
 
-    let (system, prompt) = context::to_prompt(&compiled);
-    let cron_tools = tools::heartbeat_tools();
+    let (system, prompt) = context::to_prompt(&compiled, ToolScope::Heartbeat);
+    let cron_tools = registry::heartbeat_tool_schemas();
 
     let response = match client.complete(CompleteOptions {
         system: system.clone(),
