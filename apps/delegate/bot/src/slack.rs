@@ -527,6 +527,51 @@ impl Messenger for SlackSocket {
         None
     }
 
+    async fn create_channel(&self, name: &str, purpose: Option<&str>) -> Result<SentMessage> {
+        let mut body = serde_json::json!({ "name": name });
+        if let Some(p) = purpose {
+            body["purpose"] = serde_json::json!(p);
+        }
+        let result = self.api_post("conversations.create", &body).await?;
+        let channel_id = result["channel"]["id"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let channel_name = result["channel"]["name"]
+            .as_str()
+            .unwrap_or(name)
+            .to_string();
+        // Cache the new channel
+        {
+            let mut cache = self.channel_cache.lock().await;
+            cache.insert(channel_id.clone(), channel_name);
+        }
+        Ok(SentMessage {
+            channel: channel_id,
+            timestamp: String::new(),
+        })
+    }
+
+    async fn invite_to_channel(&self, channel: &str, user_ids: &[String]) -> Result<()> {
+        let users_csv = user_ids.join(",");
+        let body = serde_json::json!({
+            "channel": channel,
+            "users": users_csv,
+        });
+        self.api_post("conversations.invite", &body).await?;
+        Ok(())
+    }
+
+    async fn send_group_dm(&self, user_ids: &[String], text: &str) -> Result<SentMessage> {
+        let users_csv = user_ids.join(",");
+        let open_body = serde_json::json!({ "users": users_csv });
+        let open_result = self.api_post("conversations.open", &open_body).await?;
+        let dm_channel = open_result["channel"]["id"]
+            .as_str()
+            .ok_or_else(|| anyhow!("No channel ID in conversations.open response for group DM"))?;
+        self.post_message(dm_channel, text, None).await
+    }
+
     async fn find_user_by_name(&self, query: &str) -> Result<Vec<(String, String)>> {
         let resp = self
             .http

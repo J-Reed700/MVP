@@ -2,6 +2,7 @@ use serde_json::Value;
 use tracing::warn;
 
 use crate::budget::TokenBudget;
+use crate::dynamic_registry::DynamicRegistry;
 use crate::event::DelegateEvent;
 use crate::messenger::Messenger;
 use crate::models::{ChatOptions, ModelClient, ModelResponse};
@@ -38,6 +39,7 @@ pub async fn run_tool_loop(
     thread_ts: &str,
     budget: &TokenBudget,
     config: &ToolLoopConfig,
+    dynamic_registry: Option<&DynamicRegistry>,
 ) -> ToolLoopOutcome {
     let ctx = ToolContext {
         messenger,
@@ -56,7 +58,16 @@ pub async fn run_tool_loop(
         conversation.push(resp.raw_assistant_message.clone());
 
         for call in &resp.tool_calls {
-            let result = tools::execute_tool(call, &ctx).await;
+            // Dispatch: try skill-defined tools first, then static tools
+            let result = if let Some(reg) = dynamic_registry {
+                if let Some(skill_tool) = reg.get_skill_tool(&call.name).await {
+                    crate::dynamic_registry::execute_skill_tool(&skill_tool, &call.arguments, ws.path()).await
+                } else {
+                    tools::execute_tool(call, &ctx).await
+                }
+            } else {
+                tools::execute_tool(call, &ctx).await
+            };
             conversation.push(serde_json::json!({
                 "role": "tool",
                 "tool_call_id": call.id,

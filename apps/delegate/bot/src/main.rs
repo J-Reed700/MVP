@@ -1,6 +1,7 @@
 mod approval;
 mod budget;
 mod context;
+mod dynamic_registry;
 mod event;
 mod heartbeat;
 mod logger;
@@ -15,6 +16,9 @@ mod tools;
 mod triage;
 mod workspace;
 
+#[cfg(test)]
+mod eval;
+
 use anyhow::{anyhow, Result};
 use chrono::Datelike;
 use serde_json::Value;
@@ -25,17 +29,18 @@ use tracing::{debug, error, info, warn};
 
 use budget::TokenBudget;
 use context::TaskType;
+use dynamic_registry::DynamicRegistry;
 use event::DelegateEvent;
 use messenger::{ChannelId, Messenger, MessageTs, Transport, UserId};
 use models::{ChatOptions, CompleteOptions, ModelClient};
-use registry::{classify_action, is_information_tool, is_reply_tool, ActionTier, ToolScope};
+use registry::{is_reply_tool, ActionTier, ToolScope};
 use slack::SlackSocket;
 use tool_loop::ToolLoopConfig;
 use tools::{summarize_action, ToolContext};
 use triage::TriageLabel;
 use workspace::Workspace;
 
-const MAX_TOOL_TURNS: usize = 5;
+const MAX_TOOL_TURNS: usize = 20;
 
 type ValidateId = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
@@ -104,6 +109,10 @@ async fn main() -> Result<()> {
 
     let (transport, messenger) = build_transport(&config.transport)?;
 
+    // Initialize dynamic registry with skill-defined tools
+    let dynamic_registry = Arc::new(DynamicRegistry::new());
+    dynamic_registry.refresh(&ws.path().join("skills")).await;
+
     let hb_config = heartbeat::parse_config(ws.path(), &|id| transport.is_valid_user_id(id)).await;
     let token_budget = TokenBudget::new(hb_config.daily_token_budget);
 
@@ -147,9 +156,10 @@ async fn main() -> Result<()> {
         let hb_model = config.model.clone();
         let hb_budget = token_budget.clone();
         let hb_validate = validate_id.clone();
+        let hb_registry = dynamic_registry.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                run_heartbeat(&hb_ws, &hb_client, &*hb_messenger, hb_model.as_deref(), &hb_budget, &hb_validate)
+                run_heartbeat(&hb_ws, &hb_client, &*hb_messenger, hb_model.as_deref(), &hb_budget, &hb_validate, &hb_registry)
                     .await
             {
                 error!("Heartbeat loop failed: {e}");
@@ -164,9 +174,10 @@ async fn main() -> Result<()> {
         let cron_model = config.model.clone();
         let cron_budget = token_budget.clone();
         let cron_validate = validate_id.clone();
+        let cron_registry = dynamic_registry.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                run_cron_scheduler(&cron_ws, &cron_client, &*cron_messenger, cron_model.as_deref(), &cron_budget, &cron_validate)
+                run_cron_scheduler(&cron_ws, &cron_client, &*cron_messenger, cron_model.as_deref(), &cron_budget, &cron_validate, &cron_registry)
                     .await
             {
                 error!("Cron scheduler failed: {e}");
@@ -218,6 +229,7 @@ async fn main() -> Result<()> {
         let evt_budget = token_budget.clone();
         let evt_watched = watched_channels.clone();
         let evt_notif_channel = notification_channel.clone();
+        let evt_registry = dynamic_registry.clone();
 
         tokio::spawn(async move {
             let result = tokio::time::timeout(
@@ -232,6 +244,7 @@ async fn main() -> Result<()> {
                     &evt_budget,
                     evt_watched.as_ref().as_ref(),
                     evt_notif_channel.as_ref().as_deref(),
+                    &evt_registry,
                 ),
             )
             .await;
@@ -306,7 +319,7 @@ async fn notify_budget_exhausted(
 // ── Event handler ──────────────────────────────────────────────────────
 
 #[tracing::instrument(
-    skip(transport, messenger, client, ws, budget, watched_channels, notification_channel),
+    skip(transport, messenger, client, ws, budget, watched_channels, notification_channel, dynamic_registry),
     fields(
         channel = %event.channel,
         user = %event.user,
@@ -325,6 +338,7 @@ async fn handle_event(
     budget: &TokenBudget,
     watched_channels: Option<&HashSet<String>>,
     notification_channel: Option<&str>,
+    dynamic_registry: &DynamicRegistry,
 ) -> Result<()> {
     let event_start = std::time::Instant::now();
     let mut event_tokens: u64 = 0;
@@ -373,8 +387,8 @@ async fn handle_event(
         user_prompt = format!("{thread_context}\n\n---\nNew message:\n{user_prompt}");
     }
 
-    // Initial LLM call
-    let tools = registry::event_tool_schemas();
+    // Initial LLM call — includes static + skill-defined tools
+    let tools = dynamic_registry.tool_schemas(ToolScope::Event).await;
     let model = model_override.map(|s| s.to_string());
 
     let response = client
@@ -409,6 +423,7 @@ async fn handle_event(
             &ctx,
             budget,
             &hb_config,
+            dynamic_registry,
         )
         .await;
 
@@ -546,6 +561,7 @@ async fn run_event_tool_loop(
     ctx: &ToolContext<'_>,
     budget: &TokenBudget,
     hb_config: &heartbeat::HeartbeatConfig,
+    dynamic_registry: &DynamicRegistry,
 ) -> (String, bool, Vec<String>, Vec<String>, u64) {
     let mut conversation: Vec<Value> = vec![
         serde_json::json!({"role": "user", "content": user_prompt}),
@@ -566,7 +582,7 @@ async fn run_event_tool_loop(
         let mut needs_followup = false;
 
         for call in &current_response.tool_calls {
-            let tier = classify_action(&call.name);
+            let tier = dynamic_registry.classify_action(&call.name).await;
 
             // Approval workflow for RequiresApproval tools
             if tier == ActionTier::RequiresApproval {
@@ -580,12 +596,22 @@ async fn run_event_tool_loop(
                 let _ = approval::write_audit_trail(ctx.ws, call, ctx.event).await;
             }
 
-            let result = tools::execute_tool(call, ctx).await;
+            // Dispatch: try skill-defined tools first, then static tools
+            let result = if let Some(skill_tool) = dynamic_registry.get_skill_tool(&call.name).await {
+                dynamic_registry::execute_skill_tool(&skill_tool, &call.arguments, ctx.ws.path()).await
+            } else {
+                tools::execute_tool(call, ctx).await
+            };
+
+            // Refresh registry after create_skill so new tools appear immediately
+            if call.name == "create_skill" {
+                dynamic_registry.refresh(&ctx.ws.path().join("skills")).await;
+            }
 
             if is_reply_tool(&call.name) {
                 has_reply = true;
             }
-            if is_information_tool(&call.name) {
+            if dynamic_registry.is_information_tool(&call.name).await {
                 needs_followup = true;
             }
             if tier == ActionTier::AutonomousWithNotice && !is_reply_tool(&call.name) && call.name != "post" {
@@ -597,11 +623,12 @@ async fn run_event_tool_loop(
         }
 
         turn += 1;
-        if !needs_followup || turn >= MAX_TOOL_TURNS || has_reply {
+
+        if has_reply || !needs_followup {
             break;
         }
 
-        // Continue multi-turn conversation
+        // Feed tool results back into conversation
         conversation.push(current_response.raw_assistant_message.clone());
         for (id, result) in &tool_results {
             conversation.push(serde_json::json!({
@@ -615,6 +642,21 @@ async fn run_event_tool_loop(
             break;
         }
 
+        // If we've hit the turn cap, give the model one final chance to reply
+        // with no tools available — it MUST produce a text response
+        let final_turn = turn >= MAX_TOOL_TURNS;
+        if final_turn {
+            conversation.push(serde_json::json!({
+                "role": "user",
+                "content": format!(
+                    "[SYSTEM] Tool turn limit reached ({turn}/{MAX_TOOL_TURNS}). \
+                     You still have access to all the tool results above — use them. \
+                     Reply to the user now with the best answer you can give based on what you've gathered. \
+                     If you didn't get everything you needed, say what's missing and offer to continue."
+                )
+            }));
+        }
+
         match client
             .chat(ChatOptions {
                 system: system.to_string(),
@@ -622,7 +664,7 @@ async fn run_event_tool_loop(
                 model: model.clone(),
                 max_tokens: Some(2048),
                 temperature: Some(0.7),
-                tools: Some(tools.to_vec()),
+                tools: if final_turn { None } else { Some(tools.to_vec()) },
             })
             .await
         {
@@ -631,6 +673,11 @@ async fn run_event_tool_loop(
                 tokens_used += t;
                 budget.record(t).await;
                 current_response = resp;
+                if final_turn {
+                    // Model was forced to produce text — let it flow through
+                    // the fallback path that posts final_content to Slack
+                    break;
+                }
             }
             Err(e) => {
                 warn!("Event tool loop LLM call failed: {e}");
@@ -725,6 +772,7 @@ async fn run_heartbeat(
     model_override: Option<&str>,
     budget: &TokenBudget,
     validate_id: &ValidateId,
+    dynamic_registry: &DynamicRegistry,
 ) -> Result<()> {
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
@@ -754,6 +802,7 @@ async fn run_heartbeat(
                 model_override,
                 budget,
                 &config,
+                dynamic_registry,
             )
             .await;
         }
@@ -774,6 +823,7 @@ async fn process_heartbeat_batch(
     model_override: Option<&str>,
     budget: &TokenBudget,
     config: &heartbeat::HeartbeatConfig,
+    dynamic_registry: &DynamicRegistry,
 ) {
     let has_queued = new_entries.contains("[queued]");
 
@@ -855,6 +905,7 @@ async fn process_heartbeat_batch(
             max_tokens: 2048,
             temperature: 0.5,
         },
+        Some(dynamic_registry),
     )
     .await;
 
@@ -923,6 +974,7 @@ async fn check_missed_jobs(
     messenger: &dyn Messenger,
     model_override: Option<&str>,
     budget: &TokenBudget,
+    dynamic_registry: &DynamicRegistry,
 ) {
     let now = chrono::Local::now();
     let today = now.date_naive();
@@ -959,11 +1011,67 @@ async fn check_missed_jobs(
         }
 
         info!(job = %job.name, "Catch-up: firing missed cron job");
-        run_cron_job(job, ws, client, messenger, model_override, budget, config).await;
+        run_cron_job(job, ws, client, messenger, model_override, budget, config, dynamic_registry).await;
         last_fired.insert(job.name.clone(), now);
     }
 
     save_last_fired(ws, last_fired).await;
+}
+
+/// Check for fired reminders and post them.
+async fn check_reminders(ws: &Workspace, messenger: &dyn Messenger) {
+    let reminders_path = ws.path().join("reminders.json");
+    let content = match tokio::fs::read_to_string(&reminders_path).await {
+        Ok(c) => c,
+        Err(_) => return, // no file = no reminders
+    };
+    let reminders: Vec<Value> = match serde_json::from_str(&content) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    if reminders.is_empty() {
+        return;
+    }
+
+    let now = chrono::Local::now();
+    let mut remaining = Vec::new();
+    let mut fired = false;
+
+    for r in &reminders {
+        let fire_at_str = match r["fire_at"].as_str() {
+            Some(s) => s,
+            None => { remaining.push(r.clone()); continue; }
+        };
+        let fire_at = match chrono::DateTime::parse_from_rfc3339(fire_at_str) {
+            Ok(dt) => dt.with_timezone(&chrono::Local),
+            Err(_) => { remaining.push(r.clone()); continue; }
+        };
+
+        if fire_at <= now {
+            let channel = r["channel"].as_str().unwrap_or("");
+            let user = r["user"].as_str().unwrap_or("");
+            let message = r["message"].as_str().unwrap_or("Reminder!");
+
+            let text = format!("<@{user}> Reminder: {message}");
+            if let Err(e) = messenger.post_message(channel, &text, None).await {
+                warn!(channel = %channel, "Failed to post reminder: {e}");
+                // Keep the reminder so we retry next tick
+                remaining.push(r.clone());
+            } else {
+                info!(user = %user, message = %message, "Reminder fired");
+                fired = true;
+            }
+        } else {
+            remaining.push(r.clone());
+        }
+    }
+
+    if fired {
+        let json = serde_json::to_string_pretty(&remaining).unwrap_or_else(|_| "[]".to_string());
+        if let Err(e) = tokio::fs::write(&reminders_path, json).await {
+            warn!("Failed to update reminders.json after firing: {e}");
+        }
+    }
 }
 
 /// Independent cron scheduler loop with 60-second tick.
@@ -974,6 +1082,7 @@ async fn run_cron_scheduler(
     model_override: Option<&str>,
     budget: &TokenBudget,
     validate_id: &ValidateId,
+    dynamic_registry: &DynamicRegistry,
 ) -> Result<()> {
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
@@ -989,6 +1098,7 @@ async fn run_cron_scheduler(
         messenger,
         model_override,
         budget,
+        dynamic_registry,
     )
     .await;
 
@@ -996,6 +1106,9 @@ async fn run_cron_scheduler(
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(CRON_TICK_SECS)).await;
+
+        // Fire any due reminders (independent of heartbeat config)
+        check_reminders(ws, messenger).await;
 
         let config = heartbeat::parse_config(ws.path(), &**validate_id).await;
         let now = chrono::Local::now();
@@ -1012,7 +1125,7 @@ async fn run_cron_scheduler(
                 }
             }
 
-            run_cron_job(job, ws, client, messenger, model_override, budget, &config).await;
+            run_cron_job(job, ws, client, messenger, model_override, budget, &config, dynamic_registry).await;
             last_fired.insert(job.name.clone(), now);
             save_last_fired(ws, &last_fired).await;
         }
@@ -1028,6 +1141,7 @@ async fn run_cron_job(
     model_override: Option<&str>,
     budget: &TokenBudget,
     config: &heartbeat::HeartbeatConfig,
+    dynamic_registry: &DynamicRegistry,
 ) {
     if !budget.is_available().await {
         debug!(job = %job.name, "Skipping cron, budget exhausted");
@@ -1103,6 +1217,7 @@ async fn run_cron_job(
             max_tokens: 2048,
             temperature: 0.5,
         },
+        Some(dynamic_registry),
     )
     .await;
 

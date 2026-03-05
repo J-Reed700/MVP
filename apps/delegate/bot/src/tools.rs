@@ -1,3 +1,4 @@
+use chrono::Duration;
 use serde_json::Value;
 use tracing::{info, warn};
 
@@ -30,6 +31,9 @@ pub async fn execute_tool(call: &ToolCall, ctx: &ToolContext<'_>) -> String {
         "post" => handle_post(args, ctx).await,
         "no_action" => handle_no_action(args),
         "create_skill" => handle_create_skill(args, ctx).await,
+        "load_skill" => handle_load_skill(args, ctx).await,
+        "http_request" => handle_http_request(args).await,
+        "run_script" => handle_run_script(args, ctx).await,
         "read_file" => handle_read_file(args, ctx).await,
         "write_file" => handle_write_file(args, ctx).await,
         "dm_user" => handle_dm_user(args, ctx).await,
@@ -39,6 +43,10 @@ pub async fn execute_tool(call: &ToolCall, ctx: &ToolContext<'_>) -> String {
         "recall_memory" => handle_recall_memory(args, ctx).await,
         "log_decision" => handle_log_decision(args, ctx).await,
         "update_intents" => handle_update_intents(args, ctx).await,
+        "set_reminder" => handle_set_reminder(args, ctx).await,
+        "create_channel" => handle_create_channel(args, ctx).await,
+        "invite_to_channel" => handle_invite_to_channel(args, ctx).await,
+        "group_dm" => handle_group_dm(args, ctx).await,
         other => {
             warn!(tool = %other, "Unknown tool call");
             format!("Unknown tool: {other}")
@@ -78,9 +86,26 @@ pub fn summarize_action(call: &ToolCall, result: &str) -> String {
             let topic = call.arguments["topic"].as_str().unwrap_or("?");
             format!("saved memory: {topic}")
         }
+        "set_reminder" => {
+            let delay = call.arguments["delay_minutes"].as_u64().unwrap_or(0);
+            let msg = call.arguments["message"].as_str().unwrap_or("?");
+            format!("set reminder ({delay}min): \"{}\"", truncate_str(msg, 60))
+        }
         "no_action" => {
             let reason = call.arguments["reason"].as_str().unwrap_or("");
             format!("no_action: {}", truncate_str(reason, 60))
+        }
+        "create_channel" => {
+            let name = call.arguments["name"].as_str().unwrap_or("?");
+            format!("created channel #{name}")
+        }
+        "invite_to_channel" => {
+            let ch = call.arguments["channel"].as_str().unwrap_or("?");
+            format!("invited users to {ch}")
+        }
+        "group_dm" => {
+            let text = call.arguments["text"].as_str().unwrap_or("");
+            format!("group dm: \"{}\"", truncate_str(text, 80))
         }
         other => other.to_string(),
     }
@@ -204,6 +229,160 @@ async fn handle_create_skill(args: &Value, ctx: &ToolContext<'_>) -> String {
             format!("Skill '{name}' created")
         }
         Err(e) => format!("Failed to write skill: {e}"),
+    }
+}
+
+async fn handle_run_script(args: &Value, ctx: &ToolContext<'_>) -> String {
+    let language = match require_str(args, "language") {
+        Ok(l) => l,
+        Err(e) => return e,
+    };
+    let code = match require_str(args, "code") {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+
+    let scripts_dir = ctx.ws.path().join(".scripts");
+    if let Err(e) = tokio::fs::create_dir_all(&scripts_dir).await {
+        return format!("Failed to create scripts directory: {e}");
+    }
+
+    let (ext, program, shell_flag) = match language {
+        "python" => ("py", "python3", None),
+        "shell" => {
+            if cfg!(windows) {
+                ("bat", "cmd", Some("/C"))
+            } else {
+                ("sh", "sh", None)
+            }
+        }
+        other => return format!("Unsupported language: {other}. Use 'python' or 'shell'."),
+    };
+
+    let script_path = scripts_dir.join(format!("_run.{ext}"));
+    if let Err(e) = tokio::fs::write(&script_path, code).await {
+        return format!("Failed to write script: {e}");
+    }
+
+    let mut cmd = tokio::process::Command::new(program);
+    if let Some(flag) = shell_flag {
+        cmd.arg(flag);
+    }
+    cmd.arg(&script_path);
+
+    // Add user-provided args
+    if let Some(script_args) = args["args"].as_array() {
+        for arg in script_args {
+            if let Some(a) = arg.as_str() {
+                cmd.arg(a);
+            }
+        }
+    }
+
+    cmd.current_dir(ctx.ws.path());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        cmd.output(),
+    )
+    .await;
+
+    // Clean up script file
+    let _ = tokio::fs::remove_file(&script_path).await;
+
+    match result {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let status = output.status;
+            info!(language = %language, status = %status, "Script executed");
+
+            let mut result = format!("Exit code: {status}\n");
+            if !stdout.is_empty() {
+                result.push_str(&format!("\nstdout:\n{}", truncate_str(&stdout, 8192)));
+            }
+            if !stderr.is_empty() {
+                result.push_str(&format!("\nstderr:\n{}", truncate_str(&stderr, 2048)));
+            }
+            result
+        }
+        Ok(Err(e)) => format!("Failed to execute script: {e}"),
+        Err(_) => "Script timed out after 30 seconds".to_string(),
+    }
+}
+
+async fn handle_http_request(args: &Value) -> String {
+    let method = match require_str(args, "method") {
+        Ok(m) => m.to_uppercase(),
+        Err(e) => return e,
+    };
+    let url = match require_str(args, "url") {
+        Ok(u) => u,
+        Err(e) => return e,
+    };
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return format!("Failed to create HTTP client: {e}"),
+    };
+
+    let mut builder = match method.as_str() {
+        "GET" => client.get(url),
+        "POST" => client.post(url),
+        "PUT" => client.put(url),
+        "PATCH" => client.patch(url),
+        "DELETE" => client.delete(url),
+        other => return format!("Unsupported HTTP method: {other}"),
+    };
+
+    if let Some(headers) = args["headers"].as_object() {
+        for (key, val) in headers {
+            if let Some(v) = val.as_str() {
+                builder = builder.header(key.as_str(), v);
+            }
+        }
+    }
+
+    if let Some(body) = args["body"].as_str() {
+        builder = builder.body(body.to_string());
+    }
+
+    match builder.send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            info!(method = %method, url = %url, status = %status, "HTTP request");
+            let truncated = truncate_str(&body, 8192);
+            if truncated.len() < body.len() {
+                format!("HTTP {status}\n\n{truncated}\n\n[truncated, {} bytes total]", body.len())
+            } else {
+                format!("HTTP {status}\n\n{body}")
+            }
+        }
+        Err(e) => format!("HTTP request failed: {e}"),
+    }
+}
+
+async fn handle_load_skill(args: &Value, ctx: &ToolContext<'_>) -> String {
+    let skill_name = match require_str(args, "skill_name") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    if skill_name.contains("..") || skill_name.contains('/') || skill_name.contains('\\') {
+        return "Invalid skill name".to_string();
+    }
+    let skill_path = ctx.ws.path().join("skills").join(skill_name).join("SKILL.md");
+    match tokio::fs::read_to_string(&skill_path).await {
+        Ok(content) => {
+            info!(skill = %skill_name, "Loaded skill");
+            content
+        }
+        Err(_) => format!("Skill not found: {skill_name}"),
     }
 }
 
@@ -525,6 +704,138 @@ async fn handle_log_decision(args: &Value, ctx: &ToolContext<'_>) -> String {
             format!("Decision logged: {}", truncate_str(decision, 80))
         }
         Err(e) => format!("Failed to log decision: {e}"),
+    }
+}
+
+async fn handle_set_reminder(args: &Value, ctx: &ToolContext<'_>) -> String {
+    let message = match require_str(args, "message") {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+    let delay_minutes = match args["delay_minutes"].as_i64() {
+        Some(d) if (1..=1440).contains(&d) => d,
+        Some(_) => return "delay_minutes must be between 1 and 1440 (24 hours)".to_string(),
+        None => return "Missing required argument: delay_minutes".to_string(),
+    };
+
+    let target = args["target"].as_str().unwrap_or("");
+    let channel = if target.is_empty() {
+        ctx.event.channel.to_string()
+    } else if target.starts_with('C') || target.starts_with('G') || target.starts_with('U') {
+        target.to_string()
+    } else {
+        match ctx.messenger.resolve_channel_id(target).await {
+            Some(id) => id,
+            None => return format!("Could not resolve target '{target}'"),
+        }
+    };
+
+    let now = chrono::Local::now();
+    let fire_at = now + Duration::minutes(delay_minutes);
+
+    let reminder = serde_json::json!({
+        "id": format!("r-{}", now.timestamp()),
+        "channel": channel,
+        "user": ctx.event.user.as_str(),
+        "message": message,
+        "fire_at": fire_at.to_rfc3339(),
+        "created_at": now.to_rfc3339(),
+    });
+
+    let reminders_path = ctx.ws.path().join("reminders.json");
+    let mut reminders: Vec<Value> = match tokio::fs::read_to_string(&reminders_path).await {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+
+    reminders.push(reminder);
+
+    match tokio::fs::write(&reminders_path, serde_json::to_string_pretty(&reminders).unwrap_or_default()).await {
+        Ok(_) => {
+            let time_str = fire_at.format("%H:%M").to_string();
+            info!(message = %message, fire_at = %time_str, "Reminder set");
+            format!("Reminder set for {time_str}: {message}")
+        }
+        Err(e) => format!("Failed to save reminder: {e}"),
+    }
+}
+
+async fn handle_create_channel(args: &Value, ctx: &ToolContext<'_>) -> String {
+    let name = match require_str(args, "name") {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    let purpose = args["purpose"].as_str();
+    match ctx.messenger.create_channel(name, purpose).await {
+        Ok(sent) => {
+            info!(channel = %name, id = %sent.channel, "Created channel");
+            format!("Channel #{name} created (ID: {})", sent.channel)
+        }
+        Err(e) => format!("Failed to create channel: {e}"),
+    }
+}
+
+async fn handle_invite_to_channel(args: &Value, ctx: &ToolContext<'_>) -> String {
+    let channel_input = match require_str(args, "channel") {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    let users = match args["users"].as_array() {
+        Some(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+        None => match require_str(args, "users") {
+            Ok(s) => s.split(',').map(|u| u.trim().to_string()).collect(),
+            Err(e) => return e,
+        },
+    };
+    if users.is_empty() {
+        return "Missing required argument: users".to_string();
+    }
+    let channel_id = if channel_input.starts_with('C') || channel_input.starts_with('G') {
+        channel_input.to_string()
+    } else {
+        match ctx.messenger.resolve_channel_id(channel_input).await {
+            Some(id) => id,
+            None => return format!("Could not resolve channel '{channel_input}'"),
+        }
+    };
+    match ctx.messenger.invite_to_channel(&channel_id, &users).await {
+        Ok(_) => {
+            info!(channel = %channel_input, users = ?users, "Invited users to channel");
+            format!("Invited {} user(s) to {channel_input}", users.len())
+        }
+        Err(e) => format!("Failed to invite users: {e}"),
+    }
+}
+
+async fn handle_group_dm(args: &Value, ctx: &ToolContext<'_>) -> String {
+    let users = match args["users"].as_array() {
+        Some(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+        None => match require_str(args, "users") {
+            Ok(s) => s.split(',').map(|u| u.trim().to_string()).collect(),
+            Err(e) => return e,
+        },
+    };
+    let text = match require_str(args, "text") {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    if users.len() < 2 {
+        return "Group DM requires at least 2 users".to_string();
+    }
+    match ctx.messenger.send_group_dm(&users, text).await {
+        Ok(_) => {
+            info!(users = ?users, "Sent group DM");
+            format!("Group DM sent to {} users", users.len())
+        }
+        Err(e) => format!("Failed to send group DM: {e}"),
     }
 }
 

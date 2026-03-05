@@ -48,6 +48,8 @@ pub struct ChatOptions {
 pub enum ModelClient {
     Anthropic { api_key: String },
     OpenAI { api_key: String },
+    /// OpenAI-compatible provider with custom base URL.
+    Compatible { api_key: String, base_url: String, default_model: String },
 }
 
 impl ModelClient {
@@ -63,6 +65,15 @@ impl ModelClient {
                     .map_err(|_| anyhow!("OPENAI_API_KEY not set"))?;
                 Ok(Self::OpenAI { api_key })
             }
+            "zhipu" | "z.ai" => {
+                let api_key = std::env::var("ZHIPU_API_KEY")
+                    .map_err(|_| anyhow!("ZHIPU_API_KEY not set"))?;
+                Ok(Self::Compatible {
+                    api_key,
+                    base_url: "https://api.z.ai/api/coding/paas/v4".to_string(),
+                    default_model: "glm-5".to_string(),
+                })
+            }
             other => Err(anyhow!("Unknown provider: {other}")),
         }
     }
@@ -72,7 +83,12 @@ impl ModelClient {
         for attempt in 0..3 {
             let result = match self {
                 Self::Anthropic { api_key } => complete_anthropic(api_key, opts.clone()).await,
-                Self::OpenAI { api_key } => complete_openai(api_key, opts.clone()).await,
+                Self::OpenAI { api_key } => complete_openai(api_key, "https://api.openai.com/v1", opts.clone()).await,
+                Self::Compatible { api_key, base_url, default_model } => {
+                    let mut o = opts.clone();
+                    if o.model.is_none() { o.model = Some(default_model.clone()); }
+                    complete_openai(api_key, base_url, o).await
+                }
             };
             match result {
                 Ok(resp) => return Ok(resp),
@@ -97,7 +113,12 @@ impl ModelClient {
         for attempt in 0..3 {
             let result = match self {
                 Self::Anthropic { api_key } => chat_anthropic(api_key, opts.clone()).await,
-                Self::OpenAI { api_key } => chat_openai(api_key, opts.clone()).await,
+                Self::OpenAI { api_key } => chat_openai(api_key, "https://api.openai.com/v1", opts.clone()).await,
+                Self::Compatible { api_key, base_url, default_model } => {
+                    let mut o = opts.clone();
+                    if o.model.is_none() { o.model = Some(default_model.clone()); }
+                    chat_openai(api_key, base_url, o).await
+                }
             };
             match result {
                 Ok(resp) => return Ok(resp),
@@ -181,7 +202,7 @@ fn is_reasoning_model(model: &str) -> bool {
         || m.starts_with("gpt-5")
 }
 
-async fn complete_openai(api_key: &str, opts: CompleteOptions) -> Result<ModelResponse> {
+async fn complete_openai(api_key: &str, base_url: &str, opts: CompleteOptions) -> Result<ModelResponse> {
     let model = opts.model.as_deref().unwrap_or("gpt-4o");
     let reasoning = is_reasoning_model(model);
 
@@ -192,7 +213,7 @@ async fn complete_openai(api_key: &str, opts: CompleteOptions) -> Result<ModelRe
 
     let mut body = serde_json::json!({
         "model": model,
-        "max_completion_tokens": max_tokens,
+        "max_tokens": max_tokens,
         "messages": [
             {"role": system_role, "content": opts.system},
             {"role": "user", "content": opts.prompt}
@@ -215,7 +236,7 @@ async fn complete_openai(api_key: &str, opts: CompleteOptions) -> Result<ModelRe
     let start = Instant::now();
 
     let resp = client
-        .post("https://api.openai.com/v1/chat/completions")
+        .post(format!("{base_url}/chat/completions"))
         .header("Authorization", format!("Bearer {api_key}"))
         .header("content-type", "application/json")
         .json(&body)
@@ -229,7 +250,7 @@ async fn complete_openai(api_key: &str, opts: CompleteOptions) -> Result<ModelRe
         let err_msg = resp_body["error"]["message"]
             .as_str()
             .unwrap_or("Unknown API error");
-        return Err(anyhow!("OpenAI API error ({}): {}", status, err_msg));
+        return Err(anyhow!("API error ({}): {}", status, err_msg));
     }
 
     let message = &resp_body["choices"][0]["message"];
@@ -251,7 +272,7 @@ async fn complete_openai(api_key: &str, opts: CompleteOptions) -> Result<ModelRe
     })
 }
 
-async fn chat_openai(api_key: &str, opts: ChatOptions) -> Result<ModelResponse> {
+async fn chat_openai(api_key: &str, base_url: &str, opts: ChatOptions) -> Result<ModelResponse> {
     let model = opts.model.as_deref().unwrap_or("gpt-4o");
     let reasoning = is_reasoning_model(model);
 
@@ -265,7 +286,7 @@ async fn chat_openai(api_key: &str, opts: ChatOptions) -> Result<ModelResponse> 
 
     let mut body = serde_json::json!({
         "model": model,
-        "max_completion_tokens": max_tokens,
+        "max_tokens": max_tokens,
         "messages": messages
     });
 
@@ -285,7 +306,7 @@ async fn chat_openai(api_key: &str, opts: ChatOptions) -> Result<ModelResponse> 
     let start = Instant::now();
 
     let resp = client
-        .post("https://api.openai.com/v1/chat/completions")
+        .post(format!("{base_url}/chat/completions"))
         .header("Authorization", format!("Bearer {api_key}"))
         .header("content-type", "application/json")
         .json(&body)
@@ -299,7 +320,7 @@ async fn chat_openai(api_key: &str, opts: ChatOptions) -> Result<ModelResponse> 
         let err_msg = resp_body["error"]["message"]
             .as_str()
             .unwrap_or("Unknown API error");
-        return Err(anyhow!("OpenAI API error ({}): {}", status, err_msg));
+        return Err(anyhow!("API error ({}): {}", status, err_msg));
     }
 
     let message = &resp_body["choices"][0]["message"];

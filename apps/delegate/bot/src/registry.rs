@@ -207,6 +207,83 @@ static REGISTRY: &[ToolEntry] = &[
         is_reply: false,
         schema_fn: schema_update_intents,
     },
+    ToolEntry {
+        name: "create_channel",
+        description: "Create a new channel.",
+        scope: ToolScope::Event,
+        tier: ActionTier::RequiresApproval,
+        frequency: Frequency::Sparingly,
+        when: "Create a channel when a new project, workstream, or topic needs a dedicated space. Pick a clear, descriptive name. Always invite relevant people after creation.",
+        is_information: false,
+        is_reply: false,
+        schema_fn: schema_create_channel,
+    },
+    ToolEntry {
+        name: "invite_to_channel",
+        description: "Invite users to a channel.",
+        scope: ToolScope::Event,
+        tier: ActionTier::RequiresApproval,
+        frequency: Frequency::Sparingly,
+        when: "Invite people to channels they should be in — e.g. when a new project channel is created, or when someone needs visibility into a conversation.",
+        is_information: false,
+        is_reply: false,
+        schema_fn: schema_invite_to_channel,
+    },
+    ToolEntry {
+        name: "group_dm",
+        description: "Start a group DM with multiple users.",
+        scope: ToolScope::Both,
+        tier: ActionTier::RequiresApproval,
+        frequency: Frequency::Sparingly,
+        when: "Start a group DM when a small set of specific people need to coordinate privately — e.g. pulling together the right 2-3 people for a quick decision. Not for announcements (use post). Always explain why you're grouping them.",
+        is_information: false,
+        is_reply: true,
+        schema_fn: schema_group_dm,
+    },
+    ToolEntry {
+        name: "run_script",
+        description: "Execute a Python or shell script.",
+        scope: ToolScope::Event,
+        tier: ActionTier::RequiresApproval,
+        frequency: Frequency::Sparingly,
+        when: "Run a script when you need to compute, transform data, or execute a skill handler. Explain what the script does before running it.",
+        is_information: true,
+        is_reply: false,
+        schema_fn: schema_run_script,
+    },
+    ToolEntry {
+        name: "http_request",
+        description: "Make an HTTP request to any URL.",
+        scope: ToolScope::Event,
+        tier: ActionTier::RequiresApproval,
+        frequency: Frequency::Sparingly,
+        when: "Call external APIs — GitHub, webhooks, REST services. Always explain why you're making the request before calling.",
+        is_information: true,
+        is_reply: false,
+        schema_fn: schema_http_request,
+    },
+    ToolEntry {
+        name: "load_skill",
+        description: "Load full instructions for a skill.",
+        scope: ToolScope::Event,
+        tier: ActionTier::Autonomous,
+        frequency: Frequency::WhenRelevant,
+        when: "Load a skill's full instructions before executing a complex workflow. Check the Skills list for available names.",
+        is_information: true,
+        is_reply: false,
+        schema_fn: schema_load_skill,
+    },
+    ToolEntry {
+        name: "set_reminder",
+        description: "Set a one-shot reminder that fires after a delay.",
+        scope: ToolScope::Event,
+        tier: ActionTier::Autonomous,
+        frequency: Frequency::WhenRelevant,
+        when: "Use when someone asks to be reminded of something, or when you identify a time-sensitive follow-up. Supports delays from 1 minute to 24 hours.",
+        is_information: false,
+        is_reply: false,
+        schema_fn: schema_set_reminder,
+    },
 ];
 
 // ── Derived functions ──────────────────────────────────────────────────
@@ -275,6 +352,31 @@ pub fn tool_playbook(scope: ToolScope) -> String {
 
     lines.push(String::new());
     lines.push("Only say things you actually know. Never fabricate people, projects, or facts. If you don't have context, say so.".to_string());
+
+    // Few-shot examples — models follow examples better than rules
+    lines.push(String::new());
+    lines.push("## Examples\n".to_string());
+
+    lines.push(
+        "**Someone shares new info casually:**\n\
+         > \"heads up — Sarah's last day is Friday, she's handing off API work to Josh\"\n\
+         → react(👍) + save_memory(topic: \"people\", content: updated team info) + reply(\"Got it — updated notes. Anything I should flag for the handoff?\")\n\
+         *You learned something new. Save it immediately — you won't get a second chance.*\n".to_string()
+    );
+
+    lines.push(
+        "**Someone announces a change that affects others:**\n\
+         > \"just pushed a breaking change to the webhook payloads — field names changed from camelCase to snake_case\"\n\
+         → recall_memory(\"webhook dashboard frontend\") → check who's affected → reply(\"Noted. Josh owns the dashboard and he's out until Thursday — this blocks his field mappings. I'll flag it to him.\") + save_memory\n\
+         *When someone announces a change, your first instinct: who does this affect? Are they in this conversation? If not, reach out.*\n".to_string()
+    );
+
+    lines.push(
+        "**Someone asks you to set up infrastructure:**\n\
+         > \"we're kicking off API v2 next week — can you set up a channel and get Sarah and Alan in there?\"\n\
+         → create_channel(name: \"api-v2\", purpose: \"API v2 rewrite\") + invite_to_channel(channel: \"api-v2\", users: [\"U_SARAH\", \"U_ALAN\"]) + reply(\"Done — #api-v2 is live, Sarah and Alan are in.\")\n\
+         *When someone says \"set up a channel\" or \"make a channel\" — use create_channel, then invite_to_channel.*\n".to_string()
+    );
 
     lines.join("\n")
 }
@@ -609,6 +711,191 @@ fn schema_update_intents() -> Value {
     })
 }
 
+fn schema_create_channel() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "create_channel",
+            "description": "Create a new channel. Use this when a project, workstream, or topic needs a dedicated space for discussion. Pick a clear, descriptive name following team conventions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Channel name in lowercase with hyphens (e.g. billing-migration, q2-planning, incident-2026-03-05)"
+                    },
+                    "purpose": {
+                        "type": "string",
+                        "description": "Short description of the channel's purpose"
+                    }
+                },
+                "required": ["name"]
+            }
+        }
+    })
+}
+
+fn schema_invite_to_channel() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "invite_to_channel",
+            "description": "Invite one or more users to a channel. Use after creating a channel or when someone needs visibility into a conversation. Look up user IDs first if you only have names.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel": {
+                        "type": "string",
+                        "description": "Channel ID or name to invite users to"
+                    },
+                    "users": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Array of user IDs to invite (e.g. [\"U012345\", \"U067890\"])"
+                    }
+                },
+                "required": ["channel", "users"]
+            }
+        }
+    })
+}
+
+fn schema_group_dm() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "group_dm",
+            "description": "Start a group DM with multiple users and send a message. Use when a small set of specific people (2-4) need to coordinate privately — pulling together the right people for a quick decision, sensitive topic, or time-sensitive coordination. Not for announcements (use post for that).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "users": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Array of user IDs to include in the group DM (minimum 2)"
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "The message to send to the group"
+                    }
+                },
+                "required": ["users", "text"]
+            }
+        }
+    })
+}
+
+fn schema_run_script() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "run_script",
+            "description": "Execute a Python or shell script. The script runs in the workspace directory with a 30-second timeout. Use this to compute, transform data, or run skill handler scripts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "language": {
+                        "type": "string",
+                        "enum": ["python", "shell"],
+                        "description": "Script language (python or shell)"
+                    },
+                    "code": {
+                        "type": "string",
+                        "description": "Script source code to execute"
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Command-line arguments to pass to the script"
+                    }
+                },
+                "required": ["language", "code"]
+            }
+        }
+    })
+}
+
+fn schema_http_request() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "http_request",
+            "description": "Make an HTTP request to any URL. Use this to call external APIs (GitHub, webhooks, REST services). Returns the HTTP status code and response body.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "method": {
+                        "type": "string",
+                        "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                        "description": "HTTP method"
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Full URL to request (e.g. https://api.github.com/repos/owner/repo/pulls)"
+                    },
+                    "headers": {
+                        "type": "object",
+                        "description": "HTTP headers as key-value pairs (e.g. {\"Authorization\": \"Bearer token\"})"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Request body (for POST/PUT/PATCH)"
+                    }
+                },
+                "required": ["method", "url"]
+            }
+        }
+    })
+}
+
+fn schema_load_skill() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "load_skill",
+            "description": "Load the full instructions for a named skill. Use this to get detailed instructions before executing a skill workflow. The skill name must match one listed in the Skills section.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "type": "string",
+                        "description": "Name of the skill to load (e.g. 'ticket-tracker-write-json')"
+                    }
+                },
+                "required": ["skill_name"]
+            }
+        }
+    })
+}
+
+fn schema_set_reminder() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "set_reminder",
+            "description": "Set a one-shot reminder that fires after a delay. The reminder will be posted to the target channel or DM, mentioning the user. Use this when someone asks to be reminded, or when you identify a time-sensitive follow-up.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "What to remind about (e.g. 'Stand-up in 5 minutes', 'Follow up on deployment')"
+                    },
+                    "delay_minutes": {
+                        "type": "integer",
+                        "description": "Minutes from now until the reminder fires (min 1, max 1440 = 24 hours)"
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Channel name/ID or user ID to post the reminder in. Defaults to the current channel."
+                    }
+                },
+                "required": ["message", "delay_minutes"]
+            }
+        }
+    })
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -625,6 +912,8 @@ mod tests {
         assert_eq!(classify_action("recall_memory"), ActionTier::Autonomous);
         assert_eq!(classify_action("channel_history"), ActionTier::Autonomous);
         assert_eq!(classify_action("lookup_user"), ActionTier::Autonomous);
+        assert_eq!(classify_action("load_skill"), ActionTier::Autonomous);
+        assert_eq!(classify_action("set_reminder"), ActionTier::Autonomous);
     }
 
     #[test]
@@ -641,6 +930,11 @@ mod tests {
         assert_eq!(classify_action("update_intents"), ActionTier::RequiresApproval);
         assert_eq!(classify_action("write_file"), ActionTier::RequiresApproval);
         assert_eq!(classify_action("create_skill"), ActionTier::RequiresApproval);
+        assert_eq!(classify_action("http_request"), ActionTier::RequiresApproval);
+        assert_eq!(classify_action("run_script"), ActionTier::RequiresApproval);
+        assert_eq!(classify_action("create_channel"), ActionTier::RequiresApproval);
+        assert_eq!(classify_action("invite_to_channel"), ActionTier::RequiresApproval);
+        assert_eq!(classify_action("group_dm"), ActionTier::RequiresApproval);
     }
 
     #[test]
@@ -656,6 +950,7 @@ mod tests {
         assert!(is_information_tool("recall_memory"));
         assert!(is_information_tool("channel_history"));
         assert!(is_information_tool("lookup_user"));
+        assert!(is_information_tool("load_skill"));
         assert!(!is_information_tool("reply"));
         assert!(!is_information_tool("react"));
     }
@@ -673,7 +968,7 @@ mod tests {
     #[test]
     fn event_schemas_include_all_tools() {
         let schemas = event_tool_schemas();
-        assert_eq!(schemas.len(), 14, "All 14 tools should be available for events");
+        assert_eq!(schemas.len(), 21, "All 21 tools should be available for events");
         // Verify each has a function name
         for s in &schemas {
             assert!(s["function"]["name"].as_str().is_some());
@@ -683,7 +978,7 @@ mod tests {
     #[test]
     fn heartbeat_schemas_are_subset() {
         let schemas = heartbeat_tool_schemas();
-        assert_eq!(schemas.len(), 9, "Heartbeat should have 9 tools");
+        assert_eq!(schemas.len(), 10, "Heartbeat should have 10 tools");
         let names: Vec<&str> = schemas
             .iter()
             .map(|s| s["function"]["name"].as_str().unwrap())
@@ -694,6 +989,9 @@ mod tests {
         assert!(!names.contains(&"create_skill"));
         assert!(!names.contains(&"write_file"));
         assert!(!names.contains(&"update_intents"));
+        assert!(!names.contains(&"set_reminder"));
+        assert!(!names.contains(&"create_channel"));
+        assert!(!names.contains(&"invite_to_channel"));
         // Core heartbeat tools should be present
         assert!(names.contains(&"post"));
         assert!(names.contains(&"save_memory"));

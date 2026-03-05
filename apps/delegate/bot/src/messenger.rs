@@ -137,6 +137,15 @@ pub trait Messenger: Send + Sync {
     async fn get_channel_name(&self, channel_id: &str) -> String;
     async fn resolve_channel_id(&self, channel_name: &str) -> Option<String>;
     async fn find_user_by_name(&self, query: &str) -> Result<Vec<(String, String)>>;
+
+    /// Create a new channel. Returns the channel ID and name.
+    async fn create_channel(&self, name: &str, purpose: Option<&str>) -> Result<SentMessage>;
+
+    /// Invite one or more users to a channel.
+    async fn invite_to_channel(&self, channel: &str, user_ids: &[String]) -> Result<()>;
+
+    /// Open a group DM with multiple users and send a message.
+    async fn send_group_dm(&self, user_ids: &[String], text: &str) -> Result<SentMessage>;
 }
 
 // ── Transport trait ───────────────────────────────────────────────────

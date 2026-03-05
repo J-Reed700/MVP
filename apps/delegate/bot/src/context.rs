@@ -1,6 +1,8 @@
 use anyhow::Result;
+use serde_json::Value;
+use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::event::DelegateEvent;
 use crate::models::estimate_tokens;
@@ -8,12 +10,39 @@ use crate::registry::ToolScope;
 use crate::retriever::{format_retrieved_content, retrieve};
 use crate::text;
 
+/// A tool defined within a skill's SKILL.md frontmatter.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct SkillTool {
+    pub name: String,
+    pub skill_name: String,
+    pub description: String,
+    pub schema: Value, // OpenAI function-calling format
+    pub handler: SkillHandler,
+}
+
+/// How a skill-defined tool executes.
+#[derive(Debug, Clone)]
+pub enum SkillHandler {
+    Script {
+        language: String,
+        script_path: PathBuf,
+    },
+    Http {
+        method: String,
+        url_template: String,
+        headers: HashMap<String, String>,
+        body_template: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Skill {
     pub name: String,
     pub description: String,
     pub full_content: String,
+    pub tools: Vec<SkillTool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -76,7 +105,8 @@ pub async fn compile(
 
     // 4. Calculate protected (never-cut) token cost
     let playbook = crate::registry::tool_playbook(scope);
-    let skills_text: String = skills.iter().map(|s| s.full_content.as_str()).collect::<Vec<_>>().join("\n");
+    // Skills are progressive-disclosure: only name+description in system prompt
+    let skills_text: String = skills.iter().map(|s| format!("- {}: {}", s.name, s.description)).collect::<Vec<_>>().join("\n");
     let protected_tokens = estimate_tokens(&identity)
         + estimate_tokens(&intents)
         + estimate_tokens(&heartbeat)
@@ -146,13 +176,25 @@ pub fn to_prompt(ctx: &CompiledContext, scope: ToolScope) -> (String, String) {
     system_parts.push(format!("# Team Briefing\n{}", ctx.identity));
 
     if !ctx.skills.is_empty() {
-        let mut skills_section = String::from("\n# Skills\n\nThese are your capabilities. If something isn't listed here, you can't do it.\n");
+        let mut skills_section = String::from("\n# Skills\n\nThese are your loaded capabilities:\n");
         for skill in &ctx.skills {
-            skills_section.push_str(&format!("\n---\n\n{}", skill.full_content));
+            if skill.description.is_empty() {
+                skills_section.push_str(&format!("- **{}**\n", skill.name));
+            } else {
+                skills_section.push_str(&format!("- **{}**: {}\n", skill.name, skill.description));
+            }
         }
-        skills_section.push_str("\n---\n\nWhen someone asks you to do something not listed above, say \"I can't do that yet\" and suggest what you *can* do instead.");
+        skills_section.push_str("\nUse `load_skill` to read full skill instructions when you need them.\n");
         system_parts.push(skills_section);
     }
+
+    // Self-extension awareness (hardcoded — never overwritten by user config)
+    system_parts.push("\n# Self-Extension\n\
+        You are not limited to your current tools. When someone asks for something you can't do yet, \
+        **proactively offer to build the capability** using `create_skill`.\n\n\
+        Example: \"I can't check PRs yet, but I can build myself that capability right now. Want me to?\"\n\n\
+        Use judgment: only offer to create a skill when it's something the team will need again. \
+        For one-off requests, just use `run_script` or `http_request` directly.".to_string());
 
     // Tool Playbook — tells the model when to use each tool
     system_parts.push(format!("\n{}", crate::registry::tool_playbook(scope)));
@@ -196,7 +238,7 @@ async fn load_file(path: &Path) -> String {
 }
 
 /// Load all skills from workspace/skills/*/SKILL.md
-async fn load_skills(skills_dir: &Path) -> Vec<Skill> {
+pub async fn load_skills(skills_dir: &Path) -> Vec<Skill> {
     let mut skills = Vec::new();
     let mut entries = match tokio::fs::read_dir(skills_dir).await {
         Ok(e) => e,
@@ -206,14 +248,19 @@ async fn load_skills(skills_dir: &Path) -> Vec<Skill> {
     while let Ok(Some(entry)) = entries.next_entry().await {
         let skill_file = entry.path().join("SKILL.md");
         if let Ok(content) = tokio::fs::read_to_string(&skill_file).await {
-            let (name, description, body) = parse_skill_frontmatter(&content);
-            let name = name.unwrap_or_else(|| {
-                entry.file_name().to_string_lossy().to_string()
-            });
+            let parsed = parse_skill_frontmatter(&content);
+            let dir_name = entry.file_name().to_string_lossy().to_string();
+            let skill_name = parsed.name.unwrap_or_else(|| dir_name.clone());
+            let skill_dir = entry.path();
+
+            // Parse tools_json if present
+            let tools = parse_skill_tools(&skill_name, &skill_dir, parsed.tools_json.as_deref());
+
             skills.push(Skill {
-                name,
-                description: description.unwrap_or_default(),
-                full_content: body,
+                name: skill_name,
+                description: parsed.description.unwrap_or_default(),
+                full_content: parsed.body,
+                tools,
             });
         }
     }
@@ -222,19 +269,106 @@ async fn load_skills(skills_dir: &Path) -> Vec<Skill> {
     skills
 }
 
+/// Parse tool definitions from a skill's tools_json frontmatter field.
+fn parse_skill_tools(skill_name: &str, skill_dir: &Path, tools_json: Option<&str>) -> Vec<SkillTool> {
+    let json_str = match tools_json {
+        Some(s) if !s.is_empty() => s,
+        _ => return Vec::new(),
+    };
+
+    let tool_defs: Vec<Value> = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut tools = Vec::new();
+    for def in tool_defs {
+        let name = match def["name"].as_str() {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let description = def["description"].as_str().unwrap_or("").to_string();
+        let params = def.get("parameters").cloned().unwrap_or(serde_json::json!({
+            "type": "object", "properties": {}, "required": []
+        }));
+
+        // Build OpenAI function-calling schema
+        let schema = serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": params
+            }
+        });
+
+        let handler_type = def["handler"].as_str().unwrap_or("script");
+        let handler = match handler_type {
+            "http" => {
+                let method = def["method"].as_str().unwrap_or("GET").to_string();
+                let url_template = def["url_template"].as_str().unwrap_or("").to_string();
+                let headers: HashMap<String, String> = def["headers"]
+                    .as_object()
+                    .map(|obj| {
+                        obj.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let body_template = def["body_template"].as_str().map(|s| s.to_string());
+                SkillHandler::Http { method, url_template, headers, body_template }
+            }
+            _ => {
+                // Default: script handler
+                let handler_file = def["handler_file"].as_str().unwrap_or("");
+                let language = if handler_file.ends_with(".py") {
+                    "python".to_string()
+                } else {
+                    "shell".to_string()
+                };
+                let script_path = skill_dir.join(handler_file);
+                SkillHandler::Script { language, script_path }
+            }
+        };
+
+        tools.push(SkillTool {
+            name,
+            skill_name: skill_name.to_string(),
+            description,
+            schema,
+            handler,
+        });
+    }
+    tools
+}
+
+/// Parsed result from SKILL.md frontmatter.
+struct ParsedSkillFrontmatter {
+    name: Option<String>,
+    description: Option<String>,
+    tools_json: Option<String>,
+    body: String,
+}
+
 /// Parse YAML frontmatter from a SKILL.md file.
-/// Returns (name, description, body after frontmatter).
-fn parse_skill_frontmatter(content: &str) -> (Option<String>, Option<String>, String) {
+/// Returns parsed name, description, tools_json, and body after frontmatter.
+fn parse_skill_frontmatter(content: &str) -> ParsedSkillFrontmatter {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
-        return (None, None, content.to_string());
+        return ParsedSkillFrontmatter {
+            name: None, description: None, tools_json: None,
+            body: content.to_string(),
+        };
     }
 
     // Find the closing ---
     let after_first = &trimmed[3..];
     let close = match after_first.find("---") {
         Some(i) => i,
-        None => return (None, None, content.to_string()),
+        None => return ParsedSkillFrontmatter {
+            name: None, description: None, tools_json: None,
+            body: content.to_string(),
+        },
     };
 
     let frontmatter = &after_first[..close];
@@ -242,17 +376,55 @@ fn parse_skill_frontmatter(content: &str) -> (Option<String>, Option<String>, St
 
     let mut name = None;
     let mut description = None;
+    let mut tools_json = None;
+    let mut in_tools_json = false;
+    let mut tools_json_lines: Vec<String> = Vec::new();
 
     for line in frontmatter.lines() {
-        let line = line.trim();
-        if let Some(val) = line.strip_prefix("name:") {
+        let trimmed_line = line.trim();
+
+        // Detect start of tools_json multiline block
+        if trimmed_line.starts_with("tools_json:") {
+            let after = trimmed_line.strip_prefix("tools_json:").unwrap().trim();
+            if after == "|" || after.is_empty() {
+                in_tools_json = true;
+                continue;
+            } else {
+                // Inline value
+                tools_json = Some(after.to_string());
+                continue;
+            }
+        }
+
+        if in_tools_json {
+            // YAML block scalar: lines must be indented
+            if line.starts_with("  ") || line.starts_with('\t') || trimmed_line.is_empty() {
+                tools_json_lines.push(line.trim_start().to_string());
+            } else {
+                // End of block
+                in_tools_json = false;
+                // Process this line normally below
+                if let Some(val) = trimmed_line.strip_prefix("name:") {
+                    name = Some(val.trim().to_string());
+                } else if let Some(val) = trimmed_line.strip_prefix("description:") {
+                    description = Some(val.trim().to_string());
+                }
+            }
+            continue;
+        }
+
+        if let Some(val) = trimmed_line.strip_prefix("name:") {
             name = Some(val.trim().to_string());
-        } else if let Some(val) = line.strip_prefix("description:") {
+        } else if let Some(val) = trimmed_line.strip_prefix("description:") {
             description = Some(val.trim().to_string());
         }
     }
 
-    (name, description, body)
+    if !tools_json_lines.is_empty() && tools_json.is_none() {
+        tools_json = Some(tools_json_lines.join("\n"));
+    }
+
+    ParsedSkillFrontmatter { name, description, tools_json, body }
 }
 
 /// Extract meaningful search terms using stop-word filtering.
@@ -454,19 +626,29 @@ mod tests {
     #[test]
     fn parse_skill_with_frontmatter() {
         let content = "---\nname: summarize\ndescription: Summarize threads\n---\n\n# Summarize\n\nDo the thing.";
-        let (name, desc, body) = parse_skill_frontmatter(content);
-        assert_eq!(name.unwrap(), "summarize");
-        assert_eq!(desc.unwrap(), "Summarize threads");
-        assert!(body.contains("# Summarize"));
+        let parsed = parse_skill_frontmatter(content);
+        assert_eq!(parsed.name.unwrap(), "summarize");
+        assert_eq!(parsed.description.unwrap(), "Summarize threads");
+        assert!(parsed.body.contains("# Summarize"));
+        assert!(parsed.tools_json.is_none());
     }
 
     #[test]
     fn parse_skill_without_frontmatter() {
         let content = "# Just a skill\n\nNo frontmatter here.";
-        let (name, desc, body) = parse_skill_frontmatter(content);
-        assert!(name.is_none());
-        assert!(desc.is_none());
-        assert_eq!(body, content);
+        let parsed = parse_skill_frontmatter(content);
+        assert!(parsed.name.is_none());
+        assert!(parsed.description.is_none());
+        assert_eq!(parsed.body, content);
+    }
+
+    #[test]
+    fn parse_skill_with_tools_json() {
+        let content = "---\nname: github-prs\ndescription: Check open PRs\ntools_json: |\n  [{\"name\": \"check_prs\", \"description\": \"List PRs\", \"parameters\": {\"type\": \"object\", \"properties\": {}}, \"handler\": \"script\", \"handler_file\": \"check.py\"}]\n---\n\n# Instructions";
+        let parsed = parse_skill_frontmatter(content);
+        assert_eq!(parsed.name.unwrap(), "github-prs");
+        let tools_json = parsed.tools_json.unwrap();
+        assert!(tools_json.contains("check_prs"));
     }
 
     // ── infer_audience ──

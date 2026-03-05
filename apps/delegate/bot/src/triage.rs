@@ -6,10 +6,11 @@ use crate::messenger::Transport;
 use crate::models::{CompleteOptions, ModelClient};
 
 /// Returns a cheap/fast model for triage based on the provider.
-fn triage_model(client: &ModelClient) -> &'static str {
+fn triage_model(client: &ModelClient) -> &str {
     match client {
         ModelClient::Anthropic { .. } => "claude-haiku-4-5-20251001",
         ModelClient::OpenAI { .. } => "gpt-4.1-nano",
+        ModelClient::Compatible { default_model, .. } => default_model.as_str(),
     }
 }
 
