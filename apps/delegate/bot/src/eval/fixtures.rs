@@ -994,6 +994,214 @@ pub(crate) const SCENARIO_SKILL_NOT_FOUND_HONEST: Scenario = Scenario {
     expected_tools: &[],
 };
 
+// ── Credential-aware integration fixtures ─────────────────────────────
+
+/// Valid credential file content for atlassian provider.
+const ATLASSIAN_CREDENTIAL_JSON: &str = r#"{
+    "provider": "atlassian",
+    "access_token": "eval_atl_token_dummy",
+    "refresh_token": "eval_atl_refresh_dummy",
+    "expires_at": "2099-01-01T00:00:00Z",
+    "scopes": ["read:jira-work", "write:jira-work"],
+    "extra": {"cloud_id": "eval-cloud-123"},
+    "connected_at": "2026-03-01T00:00:00Z",
+    "connected_by": "U_EVAL"
+}"#;
+
+/// Valid credential file content for google provider.
+const GOOGLE_CREDENTIAL_JSON: &str = r#"{
+    "provider": "google",
+    "access_token": "eval_google_token_dummy",
+    "refresh_token": "eval_google_refresh_dummy",
+    "expires_at": "2099-01-01T00:00:00Z",
+    "scopes": ["https://www.googleapis.com/auth/calendar.readonly"],
+    "extra": {},
+    "connected_at": "2026-03-01T00:00:00Z",
+    "connected_by": "U_EVAL"
+}"#;
+
+/// Minimal SKILL.md for jira with required_credentials and one HTTP tool.
+const JIRA_SKILL_MD: &str = "\
+---
+name: jira
+description: Search and manage Jira issues
+required_credentials: atlassian
+tools_json: |
+  [
+    {
+      \"name\": \"jira_search\",
+      \"description\": \"Search Jira issues using JQL\",
+      \"parameters\": {
+        \"type\": \"object\",
+        \"properties\": {
+          \"jql\": { \"type\": \"string\", \"description\": \"JQL query\" },
+          \"max_results\": { \"type\": \"integer\", \"description\": \"Max results\" }
+        },
+        \"required\": [\"jql\"]
+      },
+      \"handler\": \"http\",
+      \"method\": \"GET\",
+      \"url_template\": \"{{env.JIRA_BASE_URL}}/rest/api/3/search?jql={{jql}}&maxResults={{max_results}}\",
+      \"headers\": {
+        \"Authorization\": \"{{env.JIRA_AUTHORIZATION}}\",
+        \"Accept\": \"application/json\"
+      }
+    }
+  ]
+---
+
+# Jira Skill
+
+Use `jira_search` to find issues by JQL query.";
+
+/// Minimal SKILL.md for google-calendar with required_credentials and one HTTP tool.
+const GCAL_SKILL_MD: &str = "\
+---
+name: google-calendar
+description: Read Google Calendar events
+required_credentials: google
+tools_json: |
+  [
+    {
+      \"name\": \"gcal_list_events\",
+      \"description\": \"List upcoming Google Calendar events\",
+      \"parameters\": {
+        \"type\": \"object\",
+        \"properties\": {
+          \"calendar_id\": { \"type\": \"string\", \"description\": \"Calendar ID\" },
+          \"time_min\": { \"type\": \"string\", \"description\": \"Start time RFC3339\" },
+          \"time_max\": { \"type\": \"string\", \"description\": \"End time RFC3339\" },
+          \"max_results\": { \"type\": \"integer\", \"description\": \"Max events\" }
+        }
+      },
+      \"handler\": \"http\",
+      \"method\": \"GET\",
+      \"url_template\": \"https://www.googleapis.com/calendar/v3/calendars/{{calendar_id}}/events?timeMin={{time_min}}&timeMax={{time_max}}&maxResults={{max_results}}&singleEvents=true&orderBy=startTime\",
+      \"headers\": {
+        \"Authorization\": \"Bearer {{env.GOOGLE_ACCESS_TOKEN}}\",
+        \"Accept\": \"application/json\"
+      }
+    }
+  ]
+---
+
+# Google Calendar Skill
+
+Use `gcal_list_events` to check upcoming meetings.";
+
+// ── Credential-aware OAuth scenarios ──────────────────────────────────
+
+/// #29: Skill loads because credential is present → model calls jira_search.
+pub(crate) const SCENARIO_SKILL_WITH_CREDENTIALS: Scenario = Scenario {
+    name: "skill_with_credentials",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+        ("MEMORY.md", "# Memory\n\nEmpty for now."),
+        ("skills/jira/SKILL.md", JIRA_SKILL_MD),
+        ("credentials/atlassian.json", ATLASSIAN_CREDENTIAL_JSON),
+    ],
+    trigger: "search Jira for open bugs assigned to me",
+    correct_answer: "",
+    expected_tools: &["jira_search"],
+};
+
+/// #30: No credential → skill filtered out → model suggests connecting.
+pub(crate) const SCENARIO_SKILL_MISSING_NO_CREDENTIALS: Scenario = Scenario {
+    name: "skill_missing_no_credentials",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+        ("MEMORY.md", "# Memory\n\nEmpty for now."),
+        ("skills/jira/SKILL.md", JIRA_SKILL_MD),
+        // No credentials/atlassian.json — skill should be filtered out
+    ],
+    trigger: "search Jira for open bugs\n\
+              A) Agent searches Jira directly\n\
+              B) Agent says it can't access Jira and suggests connecting the integration\n\
+              C) Agent says it doesn't know what Jira is\n\
+              D) Agent silently does nothing",
+    correct_answer: "B",
+    expected_tools: &[],
+};
+
+/// #31: User asks to connect Jira — model calls connect_integration.
+pub(crate) const SCENARIO_CONNECT_INTEGRATION: Scenario = Scenario {
+    name: "connect_integration",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+        ("MEMORY.md", "# Memory\n\nEmpty for now."),
+    ],
+    trigger: "hey delegate, we need to hook up Jira so you can track our tickets. \
+              can you get that set up?",
+    correct_answer: "",
+    expected_tools: &["connect_integration"],
+};
+
+/// #32: User asks what's connected — model calls integration_status.
+pub(crate) const SCENARIO_INTEGRATION_STATUS: Scenario = Scenario {
+    name: "integration_status",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+        ("MEMORY.md", "# Memory\n\nEmpty for now."),
+        ("credentials/atlassian.json", ATLASSIAN_CREDENTIAL_JSON),
+    ],
+    trigger: "what integrations do you have access to right now? \
+              which ones are connected and which ones aren't?\n\
+              A) Agent calls integration_status to check\n\
+              B) Agent guesses based on its tool list\n\
+              C) Agent says it doesn't know\n\
+              D) Agent lists all possible integrations without checking",
+    correct_answer: "A",
+    expected_tools: &["integration_status"],
+};
+
+/// #33: Calendar + email → model calls connect_integration, mentions google.
+pub(crate) const SCENARIO_CONNECT_GOOGLE_COVERS_BOTH: Scenario = Scenario {
+    name: "connect_google_covers_both",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+        (
+            "MEMORY.md",
+            "# Memory\n\n\
+             - [integrations](memory/integrations.md) \u{2014} Connected services and setup notes",
+        ),
+        (
+            "memory/integrations.md",
+            "# Integrations\n\n\
+             ## Setup Notes\n\
+             - Google OAuth covers both Calendar and Gmail (one click)\n\
+             - Atlassian OAuth covers both Jira and Confluence (one click)\n\
+             - Each provider needs a single connect_integration call",
+        ),
+    ],
+    trigger: "I need you to check my calendar and draft emails — go ahead and \
+              connect whatever integration is needed to make that happen.",
+    correct_answer: "google",
+    expected_tools: &["connect_integration"],
+};
+
+/// #34: Partial connectivity — gcal works, jira doesn't.
+/// Model should use gcal_list_events AND mention connecting Jira.
+pub(crate) const SCENARIO_PARTIAL_CONNECTIVITY: Scenario = Scenario {
+    name: "partial_connectivity",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+        ("MEMORY.md", "# Memory\n\nEmpty for now."),
+        ("skills/google-calendar/SKILL.md", GCAL_SKILL_MD),
+        ("credentials/google.json", GOOGLE_CREDENTIAL_JSON),
+        ("skills/jira/SKILL.md", JIRA_SKILL_MD),
+        // No credentials/atlassian.json — jira skill filtered out
+    ],
+    trigger: "check my calendar for today and also search Jira for open bugs",
+    correct_answer: "connect",
+    expected_tools: &["gcal_list_events"],
+};
+
 /// All eval scenarios in order.
 pub(crate) fn all_scenarios() -> Vec<&'static Scenario> {
     vec![
@@ -1032,5 +1240,12 @@ pub(crate) fn all_scenarios() -> Vec<&'static Scenario> {
         &SCENARIO_SKILL_DEFINED_TOOL,
         &SCENARIO_CREATE_SKILL_SELF_EXTEND,
         &SCENARIO_SKILL_NOT_FOUND_HONEST,
+        // Credential-aware integration scenarios
+        &SCENARIO_SKILL_WITH_CREDENTIALS,
+        &SCENARIO_SKILL_MISSING_NO_CREDENTIALS,
+        &SCENARIO_CONNECT_INTEGRATION,
+        &SCENARIO_INTEGRATION_STATUS,
+        &SCENARIO_CONNECT_GOOGLE_COVERS_BOTH,
+        &SCENARIO_PARTIAL_CONNECTIVITY,
     ]
 }

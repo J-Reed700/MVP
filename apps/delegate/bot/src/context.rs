@@ -90,7 +90,7 @@ pub async fn compile(
     let identity = load_file(&workspace.join("IDENTITY.md")).await;
     let intents = load_file(&workspace.join("INTENTS.md")).await;
     let heartbeat = load_file(&workspace.join("HEARTBEAT.md")).await;
-    let skills = load_skills(&workspace.join("skills")).await;
+    let skills = load_skills(&workspace.join("skills"), None).await;
 
     // 2. Build framing (tier 3: never cut)
     // Use resolved channel name for audience inference, fall back to channel ID
@@ -238,7 +238,28 @@ async fn load_file(path: &Path) -> String {
 }
 
 /// Load all skills from workspace/skills/*/SKILL.md
-pub async fn load_skills(skills_dir: &Path) -> Vec<Skill> {
+///
+/// Filtering logic for skills with `required_credentials`:
+/// - If `connected_providers` is None → load all skills (backward compat, no OAuth at all).
+/// - If a skill's required provider is in `connected_providers` → load (OAuth connected).
+/// - If a skill's required provider is NOT in `configured_providers` → load (no OAuth config
+///   for this provider, so it uses env vars).
+/// - Otherwise → skip (OAuth is configured but user hasn't connected yet).
+///
+/// Skills without `required_credentials` always load.
+pub async fn load_skills(
+    skills_dir: &Path,
+    connected_providers: Option<&HashSet<String>>,
+) -> Vec<Skill> {
+    load_skills_filtered(skills_dir, connected_providers, None).await
+}
+
+/// Load skills with explicit configured provider filtering.
+pub async fn load_skills_filtered(
+    skills_dir: &Path,
+    connected_providers: Option<&HashSet<String>>,
+    configured_providers: Option<&HashSet<String>>,
+) -> Vec<Skill> {
     let mut skills = Vec::new();
     let mut entries = match tokio::fs::read_dir(skills_dir).await {
         Ok(e) => e,
@@ -249,6 +270,24 @@ pub async fn load_skills(skills_dir: &Path) -> Vec<Skill> {
         let skill_file = entry.path().join("SKILL.md");
         if let Ok(content) = tokio::fs::read_to_string(&skill_file).await {
             let parsed = parse_skill_frontmatter(&content);
+
+            // Filter by required_credentials
+            if let Some(ref req_cred) = parsed.required_credentials {
+                if let Some(connected) = connected_providers {
+                    if !connected.contains(req_cred) {
+                        // Not OAuth-connected. Check if provider has OAuth config.
+                        if let Some(configured) = configured_providers {
+                            if configured.contains(req_cred) {
+                                // OAuth IS configured but not connected yet — skip
+                                continue;
+                            }
+                            // OAuth NOT configured — fall through, will use env vars
+                        }
+                        // No configured_providers info — fall through (backward compat)
+                    }
+                }
+            }
+
             let dir_name = entry.file_name().to_string_lossy().to_string();
             let skill_name = parsed.name.unwrap_or_else(|| dir_name.clone());
             let skill_dir = entry.path();
@@ -347,6 +386,7 @@ struct ParsedSkillFrontmatter {
     name: Option<String>,
     description: Option<String>,
     tools_json: Option<String>,
+    required_credentials: Option<String>,
     body: String,
 }
 
@@ -357,7 +397,7 @@ fn parse_skill_frontmatter(content: &str) -> ParsedSkillFrontmatter {
     if !trimmed.starts_with("---") {
         return ParsedSkillFrontmatter {
             name: None, description: None, tools_json: None,
-            body: content.to_string(),
+            required_credentials: None, body: content.to_string(),
         };
     }
 
@@ -367,7 +407,7 @@ fn parse_skill_frontmatter(content: &str) -> ParsedSkillFrontmatter {
         Some(i) => i,
         None => return ParsedSkillFrontmatter {
             name: None, description: None, tools_json: None,
-            body: content.to_string(),
+            required_credentials: None, body: content.to_string(),
         },
     };
 
@@ -377,6 +417,7 @@ fn parse_skill_frontmatter(content: &str) -> ParsedSkillFrontmatter {
     let mut name = None;
     let mut description = None;
     let mut tools_json = None;
+    let mut required_credentials = None;
     let mut in_tools_json = false;
     let mut tools_json_lines: Vec<String> = Vec::new();
 
@@ -408,6 +449,8 @@ fn parse_skill_frontmatter(content: &str) -> ParsedSkillFrontmatter {
                     name = Some(val.trim().to_string());
                 } else if let Some(val) = trimmed_line.strip_prefix("description:") {
                     description = Some(val.trim().to_string());
+                } else if let Some(val) = trimmed_line.strip_prefix("required_credentials:") {
+                    required_credentials = Some(val.trim().to_string());
                 }
             }
             continue;
@@ -417,6 +460,8 @@ fn parse_skill_frontmatter(content: &str) -> ParsedSkillFrontmatter {
             name = Some(val.trim().to_string());
         } else if let Some(val) = trimmed_line.strip_prefix("description:") {
             description = Some(val.trim().to_string());
+        } else if let Some(val) = trimmed_line.strip_prefix("required_credentials:") {
+            required_credentials = Some(val.trim().to_string());
         }
     }
 
@@ -424,7 +469,7 @@ fn parse_skill_frontmatter(content: &str) -> ParsedSkillFrontmatter {
         tools_json = Some(tools_json_lines.join("\n"));
     }
 
-    ParsedSkillFrontmatter { name, description, tools_json, body }
+    ParsedSkillFrontmatter { name, description, tools_json, required_credentials, body }
 }
 
 /// Extract meaningful search terms using stop-word filtering.
@@ -631,6 +676,15 @@ mod tests {
         assert_eq!(parsed.description.unwrap(), "Summarize threads");
         assert!(parsed.body.contains("# Summarize"));
         assert!(parsed.tools_json.is_none());
+        assert!(parsed.required_credentials.is_none());
+    }
+
+    #[test]
+    fn parse_skill_with_required_credentials() {
+        let content = "---\nname: jira\ndescription: Jira integration\nrequired_credentials: atlassian\ntools_json: |\n  []\n---\n\n# Jira";
+        let parsed = parse_skill_frontmatter(content);
+        assert_eq!(parsed.name.unwrap(), "jira");
+        assert_eq!(parsed.required_credentials.unwrap(), "atlassian");
     }
 
     #[test]
@@ -649,6 +703,110 @@ mod tests {
         assert_eq!(parsed.name.unwrap(), "github-prs");
         let tools_json = parsed.tools_json.unwrap();
         assert!(tools_json.contains("check_prs"));
+    }
+
+    // ── integration skill loading ──
+
+    #[tokio::test]
+    async fn load_integration_skills_all_parse() {
+        let skills_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("workspace/skills");
+        let skills = load_skills(&skills_dir, None).await;
+
+        // Verify all 6 integration skills loaded (plus any pre-existing behavioral skills)
+        let integration_names: Vec<&str> = vec![
+            "confluence", "gmail", "google-calendar", "jira", "linear", "notion",
+        ];
+        for name in &integration_names {
+            let skill = skills.iter().find(|s| s.name == *name);
+            assert!(skill.is_some(), "Skill '{}' not found", name);
+            let skill = skill.unwrap();
+            assert!(!skill.description.is_empty(), "Skill '{}' has empty description", name);
+            assert!(!skill.tools.is_empty(), "Skill '{}' has no tools", name);
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_skill_tool_counts() {
+        let skills_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("workspace/skills");
+        let skills = load_skills(&skills_dir, None).await;
+
+        let expected: Vec<(&str, usize)> = vec![
+            ("jira", 11),          // search, get, create, update, transition, get_transitions, add_comment, assign, get_sprint, get_boards, link_issues
+            ("linear", 9),         // search, get, create, update, add_comment, list_projects, get_cycle, list_members, list_states
+            ("notion", 8),         // search, get_page, get_content, create, query_db, append, create_db_entry, update_properties
+            ("confluence", 7),     // search, get, create, update, list_spaces, add_comment, get_children
+            ("google-calendar", 4),// list_events, get_event, list_calendars, freebusy
+            ("gmail", 7),          // list, read, send, draft, labels, get_thread, reply
+        ];
+
+        for (name, count) in &expected {
+            let skill = skills.iter().find(|s| s.name == *name).unwrap();
+            assert_eq!(
+                skill.tools.len(), *count,
+                "Skill '{}' expected {} tools, got {}", name, count, skill.tools.len()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_skills_all_http_handlers() {
+        let skills_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("workspace/skills");
+        let skills = load_skills(&skills_dir, None).await;
+
+        let integration_names = ["confluence", "gmail", "google-calendar", "jira", "linear", "notion"];
+        for name in &integration_names {
+            let skill = skills.iter().find(|s| s.name == *name).unwrap();
+            for tool in &skill.tools {
+                match &tool.handler {
+                    SkillHandler::Http { method, url_template, .. } => {
+                        assert!(!url_template.is_empty(), "Tool '{}' has empty url_template", tool.name);
+                        assert!(
+                            ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&method.as_str()),
+                            "Tool '{}' has invalid method '{}'", tool.name, method
+                        );
+                    }
+                    SkillHandler::Script { .. } => {
+                        panic!("Integration tool '{}' in '{}' should be HTTP handler, not script", tool.name, name);
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_skills_have_env_var_auth() {
+        let skills_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("workspace/skills");
+        let skills = load_skills(&skills_dir, None).await;
+
+        let integration_names = ["confluence", "gmail", "google-calendar", "jira", "linear", "notion"];
+        for name in &integration_names {
+            let skill = skills.iter().find(|s| s.name == *name).unwrap();
+            let has_env_auth = skill.tools.iter().any(|tool| {
+                if let SkillHandler::Http { headers, .. } = &tool.handler {
+                    headers.values().any(|v| v.contains("{{env."))
+                } else {
+                    false
+                }
+            });
+            assert!(has_env_auth, "Skill '{}' has no env var auth in headers", name);
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_skill_schemas_valid() {
+        let skills_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("workspace/skills");
+        let skills = load_skills(&skills_dir, None).await;
+
+        let integration_names = ["confluence", "gmail", "google-calendar", "jira", "linear", "notion"];
+        for name in &integration_names {
+            let skill = skills.iter().find(|s| s.name == *name).unwrap();
+            for tool in &skill.tools {
+                // Schema must have OpenAI function-calling format
+                assert_eq!(tool.schema["type"], "function", "Tool '{}' schema missing type=function", tool.name);
+                assert!(tool.schema["function"]["name"].is_string(), "Tool '{}' schema missing function.name", tool.name);
+                assert!(tool.schema["function"]["parameters"].is_object(), "Tool '{}' schema missing parameters", tool.name);
+            }
+        }
     }
 
     // ── infer_audience ──

@@ -47,6 +47,8 @@ pub async fn execute_tool(call: &ToolCall, ctx: &ToolContext<'_>) -> String {
         "create_channel" => handle_create_channel(args, ctx).await,
         "invite_to_channel" => handle_invite_to_channel(args, ctx).await,
         "group_dm" => handle_group_dm(args, ctx).await,
+        "connect_integration" => handle_connect_integration(args, ctx).await,
+        "integration_status" => handle_integration_status(ctx).await,
         other => {
             warn!(tool = %other, "Unknown tool call");
             format!("Unknown tool: {other}")
@@ -107,6 +109,11 @@ pub fn summarize_action(call: &ToolCall, result: &str) -> String {
             let text = call.arguments["text"].as_str().unwrap_or("");
             format!("group dm: \"{}\"", truncate_str(text, 80))
         }
+        "connect_integration" => {
+            let provider = call.arguments["provider"].as_str().unwrap_or("?");
+            format!("generated connect link for {provider}")
+        }
+        "integration_status" => "checked integration status".to_string(),
         other => other.to_string(),
     }
 }
@@ -860,6 +867,95 @@ async fn handle_update_intents(args: &Value, ctx: &ToolContext<'_>) -> String {
         Ok(_) => format!("INTENTS.md updated. Reason: {reason}"),
         Err(e) => format!("Failed to update INTENTS.md: {e}"),
     }
+}
+
+async fn handle_connect_integration(args: &Value, ctx: &ToolContext<'_>) -> String {
+    let provider = match require_str(args, "provider") {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+
+    let valid_providers = ["atlassian", "linear", "notion", "google"];
+    if !valid_providers.contains(&provider) {
+        return format!(
+            "Unknown provider '{provider}'. Available: {}",
+            valid_providers.join(", ")
+        );
+    }
+
+    let port: u16 = std::env::var("OAUTH_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3456);
+    let base_url = std::env::var("OAUTH_CALLBACK_URL")
+        .unwrap_or_else(|_| format!("http://localhost:{port}"));
+
+    let user_id = ctx.event.user.as_str();
+    let connect_url = format!("{base_url}/connect/{provider}?user={user_id}");
+
+    let covers = match provider {
+        "atlassian" => "Jira + Confluence",
+        "linear" => "Linear",
+        "notion" => "Notion",
+        "google" => "Google Calendar + Gmail",
+        _ => provider,
+    };
+
+    format!(
+        "Click to connect {covers}:\n{connect_url}\n\nThis link is unique to you and expires after use."
+    )
+}
+
+async fn handle_integration_status(ctx: &ToolContext<'_>) -> String {
+    let cred_dir = ctx.ws.path().join("credentials");
+    let mut connected = Vec::new();
+    let mut available = Vec::new();
+
+    let provider_info = [
+        ("atlassian", "Jira + Confluence"),
+        ("linear", "Linear"),
+        ("notion", "Notion"),
+        ("google", "Google Calendar + Gmail"),
+    ];
+
+    for (provider, label) in &provider_info {
+        let cred_file = cred_dir.join(format!("{provider}.json"));
+        if cred_file.exists() {
+            connected.push(format!("{label} ({provider})"));
+        } else {
+            // Check if OAuth is configured for this provider
+            let env_key = format!("{}_CLIENT_ID", provider.to_uppercase());
+            if std::env::var(&env_key).is_ok() {
+                available.push(format!("{label} — ready to connect"));
+            }
+        }
+    }
+
+    let mut result = String::new();
+
+    if !connected.is_empty() {
+        result.push_str("Connected:\n");
+        for c in &connected {
+            result.push_str(&format!("  - {c}\n"));
+        }
+    }
+
+    if !available.is_empty() {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str("Available to connect:\n");
+        for a in &available {
+            result.push_str(&format!("  - {a}\n"));
+        }
+        result.push_str("\nUse connect_integration to generate a connection link.");
+    }
+
+    if result.is_empty() {
+        result = "No OAuth providers configured. Set ATLASSIAN_CLIENT_ID/SECRET, LINEAR_CLIENT_ID/SECRET, NOTION_CLIENT_ID/SECRET, or GOOGLE_CLIENT_ID/SECRET to enable.".to_string();
+    }
+
+    result
 }
 
 #[cfg(test)]

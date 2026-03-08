@@ -284,6 +284,28 @@ static REGISTRY: &[ToolEntry] = &[
         is_reply: false,
         schema_fn: schema_set_reminder,
     },
+    ToolEntry {
+        name: "connect_integration",
+        description: "Generate an OAuth connection URL for an integration provider.",
+        scope: ToolScope::Event,
+        tier: ActionTier::Autonomous,
+        frequency: Frequency::WhenRelevant,
+        when: "Use when a user asks to connect an integration (Jira, Linear, Notion, Google Calendar, Gmail) or when a skill tool fails due to missing credentials. Returns a clickable link.",
+        is_information: true,
+        is_reply: false,
+        schema_fn: schema_connect_integration,
+    },
+    ToolEntry {
+        name: "integration_status",
+        description: "Check which integrations are connected via OAuth.",
+        scope: ToolScope::Event,
+        tier: ActionTier::Autonomous,
+        frequency: Frequency::WhenRelevant,
+        when: "Use when a user asks what integrations are available, or to check connection status before attempting an integration tool.",
+        is_information: true,
+        is_reply: false,
+        schema_fn: schema_integration_status,
+    },
 ];
 
 // ── Derived functions ──────────────────────────────────────────────────
@@ -896,6 +918,41 @@ fn schema_set_reminder() -> Value {
     })
 }
 
+fn schema_connect_integration() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "connect_integration",
+            "description": "Generate an OAuth connection link for an integration provider. The user clicks the link to authorize the bot. One click can cover multiple tools (e.g. 'atlassian' connects both Jira and Confluence).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "description": "Provider to connect: 'atlassian' (Jira + Confluence), 'linear', 'notion', 'google' (Calendar + Gmail)",
+                        "enum": ["atlassian", "linear", "notion", "google"]
+                    }
+                },
+                "required": ["provider"]
+            }
+        }
+    })
+}
+
+fn schema_integration_status() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "integration_status",
+            "description": "Check which integration providers are connected via OAuth and which are available to connect.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    })
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -914,6 +971,8 @@ mod tests {
         assert_eq!(classify_action("lookup_user"), ActionTier::Autonomous);
         assert_eq!(classify_action("load_skill"), ActionTier::Autonomous);
         assert_eq!(classify_action("set_reminder"), ActionTier::Autonomous);
+        assert_eq!(classify_action("connect_integration"), ActionTier::Autonomous);
+        assert_eq!(classify_action("integration_status"), ActionTier::Autonomous);
     }
 
     #[test]
@@ -951,6 +1010,8 @@ mod tests {
         assert!(is_information_tool("channel_history"));
         assert!(is_information_tool("lookup_user"));
         assert!(is_information_tool("load_skill"));
+        assert!(is_information_tool("connect_integration"));
+        assert!(is_information_tool("integration_status"));
         assert!(!is_information_tool("reply"));
         assert!(!is_information_tool("react"));
     }
@@ -968,7 +1029,7 @@ mod tests {
     #[test]
     fn event_schemas_include_all_tools() {
         let schemas = event_tool_schemas();
-        assert_eq!(schemas.len(), 21, "All 21 tools should be available for events");
+        assert_eq!(schemas.len(), 23, "All 23 tools should be available for events");
         // Verify each has a function name
         for s in &schemas {
             assert!(s["function"]["name"].as_str().is_some());

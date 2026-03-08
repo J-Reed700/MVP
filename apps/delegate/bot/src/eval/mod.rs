@@ -82,6 +82,14 @@ eval_test!(eval_26_skill_defined_tool, &SCENARIO_SKILL_DEFINED_TOOL);
 eval_test!(eval_27_create_skill_self_extend, &SCENARIO_CREATE_SKILL_SELF_EXTEND);
 eval_test!(eval_28_skill_not_found_honest, &SCENARIO_SKILL_NOT_FOUND_HONEST);
 
+// Credential-aware integration scenarios
+eval_test!(eval_29_skill_with_credentials, &SCENARIO_SKILL_WITH_CREDENTIALS);
+eval_test!(eval_30_skill_missing_no_credentials, &SCENARIO_SKILL_MISSING_NO_CREDENTIALS);
+eval_test!(eval_31_connect_integration, &SCENARIO_CONNECT_INTEGRATION);
+eval_test!(eval_32_integration_status, &SCENARIO_INTEGRATION_STATUS);
+eval_test!(eval_33_connect_google_covers_both, &SCENARIO_CONNECT_GOOGLE_COVERS_BOTH);
+eval_test!(eval_34_partial_connectivity, &SCENARIO_PARTIAL_CONNECTIVITY);
+
 /// Runs all scenarios sequentially, prints a scorecard, and persists results
 /// to `eval_results.json`.
 #[tokio::test]

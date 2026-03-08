@@ -2,6 +2,8 @@
 
 use anyhow::Result;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::budget::TokenBudget;
 use crate::context::{self, TaskType};
@@ -9,11 +11,35 @@ use crate::dynamic_registry::{self, DynamicRegistry};
 use crate::event::DelegateEvent;
 use crate::messenger::{ChannelId, MessageTs, UserId};
 use crate::models::{ChatOptions, CompleteOptions, ModelClient};
+use crate::oauth::{CredentialStore, OAuthProviderConfig};
 use crate::registry::ToolScope;
 use crate::tools::{self, ToolContext};
 use crate::workspace::Workspace;
 
 use super::mock::MockMessenger;
+
+/// Dummy provider configs so `configured_providers()` returns all 4 providers.
+/// This lets the 3-tier credential filter properly skip skills whose provider
+/// isn't connected (rather than falling through to env-var mode).
+fn eval_provider_configs() -> HashMap<String, OAuthProviderConfig> {
+    ["atlassian", "linear", "notion", "google"]
+        .iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                OAuthProviderConfig {
+                    name: name.to_string(),
+                    client_id: "eval-dummy".to_string(),
+                    client_secret: "eval-dummy".to_string(),
+                    auth_url: String::new(),
+                    token_url: String::new(),
+                    scopes: Vec::new(),
+                    extra_auth_params: HashMap::new(),
+                },
+            )
+        })
+        .collect()
+}
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -64,12 +90,19 @@ pub(crate) async fn run_scenario(scenario: &Scenario) -> Result<EvalResult> {
         raw: serde_json::json!({}),
     };
 
-    // Initialize dynamic registry (picks up skill-defined tools from workspace)
+    // Initialize credential store with dummy provider configs
+    let cred_store = Arc::new(CredentialStore::new(ws_path, eval_provider_configs()));
+    cred_store.load_all().await;
+    let connected = cred_store.connected_providers().await;
+    let configured = cred_store.configured_providers();
+
+    // Initialize dynamic registry with credential-aware filtering
     let registry = DynamicRegistry::new();
-    registry.refresh(&ws.path().join("skills")).await;
+    registry.set_credential_store(cred_store.clone()).await;
+    registry.refresh_with_filter(&ws_path.join("skills"), Some(&connected)).await;
 
     // Compile context
-    let compiled = context::compile(
+    let mut compiled = context::compile(
         &event,
         ws.path(),
         TaskType::Respond,
@@ -81,12 +114,22 @@ pub(crate) async fn run_scenario(scenario: &Scenario) -> Result<EvalResult> {
     )
     .await?;
 
+    // Override skills to match credential-filtered registry
+    compiled.skills = context::load_skills_filtered(
+        &ws_path.join("skills"),
+        Some(&connected),
+        Some(&configured),
+    )
+    .await;
+
     let (system, prompt) = context::to_prompt(&compiled, ToolScope::Event);
     // Use dynamic registry for tools — includes skill-defined tools
     let tools = registry.tool_schemas(ToolScope::Event).await;
 
     // Build model client from env
-    let provider = std::env::var("DELEGATE_PROVIDER").unwrap_or_else(|_| "anthropic".to_string());
+    // Load .env if present (tests don't go through main.rs which calls dotenvy)
+    let _ = dotenvy::dotenv();
+    let provider = std::env::var("DELEGATE_PROVIDER").unwrap_or_else(|_| "zhipu".to_string());
     let client = ModelClient::new(&provider)?;
 
     // Initial LLM call
@@ -140,7 +183,7 @@ pub(crate) async fn run_scenario(scenario: &Scenario) -> Result<EvalResult> {
             }
             // Dispatch: skill-defined tools first, then static tools
             let result = if let Some(skill_tool) = registry.get_skill_tool(&call.name).await {
-                dynamic_registry::execute_skill_tool(&skill_tool, &call.arguments, ws.path()).await
+                dynamic_registry::execute_skill_tool(&skill_tool, &call.arguments, ws.path(), Some(&cred_store)).await
             } else {
                 tools::execute_tool(call, &ctx).await
             };
@@ -191,7 +234,7 @@ pub(crate) async fn run_scenario(scenario: &Scenario) -> Result<EvalResult> {
             }
             // Dispatch skill tools in final turn too
             if let Some(skill_tool) = registry.get_skill_tool(&call.name).await {
-                dynamic_registry::execute_skill_tool(&skill_tool, &call.arguments, ws.path()).await;
+                dynamic_registry::execute_skill_tool(&skill_tool, &call.arguments, ws.path(), Some(&cred_store)).await;
             } else {
                 tools::execute_tool(call, &ctx).await;
             }

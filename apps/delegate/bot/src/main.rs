@@ -7,6 +7,7 @@ mod heartbeat;
 mod logger;
 mod messenger;
 mod models;
+mod oauth;
 mod registry;
 mod retriever;
 mod slack;
@@ -109,9 +110,24 @@ async fn main() -> Result<()> {
 
     let (transport, messenger) = build_transport(&config.transport)?;
 
-    // Initialize dynamic registry with skill-defined tools
+    // Initialize credential store for OAuth-managed integrations
+    let credential_store = Arc::new(oauth::CredentialStore::new(
+        ws.path(),
+        oauth::load_provider_configs(),
+    ));
+    credential_store.load_all().await;
+    let connected_providers = credential_store.connected_providers().await;
+
+    // Initialize dynamic registry with skill-defined tools (filtered by connected providers)
     let dynamic_registry = Arc::new(DynamicRegistry::new());
-    dynamic_registry.refresh(&ws.path().join("skills")).await;
+    dynamic_registry.set_credential_store(credential_store.clone()).await;
+    if connected_providers.is_empty() {
+        dynamic_registry.refresh(&ws.path().join("skills")).await;
+    } else {
+        dynamic_registry
+            .refresh_with_filter(&ws.path().join("skills"), Some(&connected_providers))
+            .await;
+    }
 
     let hb_config = heartbeat::parse_config(ws.path(), &|id| transport.is_valid_user_id(id)).await;
     let token_budget = TokenBudget::new(hb_config.daily_token_budget);
@@ -182,6 +198,19 @@ async fn main() -> Result<()> {
             {
                 error!("Cron scheduler failed: {e}");
             }
+        })
+    };
+
+    // Spawn OAuth server for integration auth callbacks
+    let oauth_handle = {
+        let oauth_cred_store = credential_store.clone();
+        let oauth_registry = dynamic_registry.clone();
+        let oauth_port: u16 = std::env::var("OAUTH_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3456);
+        tokio::spawn(async move {
+            oauth::serve(oauth_port, oauth_cred_store, oauth_registry).await;
         })
     };
 
@@ -261,6 +290,7 @@ async fn main() -> Result<()> {
         r = listener_handle => { r?; }
         r = heartbeat_handle => { r?; }
         r = cron_handle => { r?; }
+        r = oauth_handle => { r?; }
     }
     Ok(())
 }
@@ -598,14 +628,28 @@ async fn run_event_tool_loop(
 
             // Dispatch: try skill-defined tools first, then static tools
             let result = if let Some(skill_tool) = dynamic_registry.get_skill_tool(&call.name).await {
-                dynamic_registry::execute_skill_tool(&skill_tool, &call.arguments, ctx.ws.path()).await
+                let cred_store = dynamic_registry.get_credential_store().await;
+                dynamic_registry::execute_skill_tool(
+                    &skill_tool,
+                    &call.arguments,
+                    ctx.ws.path(),
+                    cred_store.as_ref().map(|s| s.as_ref()),
+                ).await
             } else {
                 tools::execute_tool(call, ctx).await
             };
 
             // Refresh registry after create_skill so new tools appear immediately
             if call.name == "create_skill" {
-                dynamic_registry.refresh(&ctx.ws.path().join("skills")).await;
+                let cred_store = dynamic_registry.get_credential_store().await;
+                let connected = match &cred_store {
+                    Some(s) => Some(s.connected_providers().await),
+                    None => None,
+                };
+                dynamic_registry.refresh_with_filter(
+                    &ctx.ws.path().join("skills"),
+                    connected.as_ref(),
+                ).await;
             }
 
             if is_reply_tool(&call.name) {

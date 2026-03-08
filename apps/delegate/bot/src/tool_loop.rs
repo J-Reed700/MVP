@@ -61,7 +61,13 @@ pub async fn run_tool_loop(
             // Dispatch: try skill-defined tools first, then static tools
             let result = if let Some(reg) = dynamic_registry {
                 if let Some(skill_tool) = reg.get_skill_tool(&call.name).await {
-                    crate::dynamic_registry::execute_skill_tool(&skill_tool, &call.arguments, ws.path()).await
+                    let cred_store = reg.get_credential_store().await;
+                    crate::dynamic_registry::execute_skill_tool(
+                        &skill_tool,
+                        &call.arguments,
+                        ws.path(),
+                        cred_store.as_ref().map(|s| s.as_ref()),
+                    ).await
                 } else {
                     tools::execute_tool(call, &ctx).await
                 }
