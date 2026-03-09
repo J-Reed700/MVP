@@ -90,6 +90,44 @@ eval_test!(eval_32_integration_status, &SCENARIO_INTEGRATION_STATUS);
 eval_test!(eval_33_connect_google_covers_both, &SCENARIO_CONNECT_GOOGLE_COVERS_BOTH);
 eval_test!(eval_34_partial_connectivity, &SCENARIO_PARTIAL_CONNECTIVITY);
 
+// Spec-driven PM behavior scenarios
+eval_test!(eval_35_synthesize_project_status, &SCENARIO_SYNTHESIZE_PROJECT_STATUS);
+eval_test!(eval_36_provide_unrequested_context, &SCENARIO_PROVIDE_UNREQUESTED_CONTEXT);
+eval_test!(eval_37_flag_blocker_proactively, &SCENARIO_FLAG_BLOCKER_PROACTIVELY);
+eval_test!(eval_38_detect_scope_decision, &SCENARIO_DETECT_SCOPE_DECISION);
+eval_test!(eval_39_write_standup_from_state, &SCENARIO_WRITE_STANDUP_FROM_STATE);
+eval_test!(eval_40_tone_calibrate_executive, &SCENARIO_TONE_CALIBRATE_EXECUTIVE);
+eval_test!(eval_41_memory_transparency_sources, &SCENARIO_MEMORY_TRANSPARENCY_SOURCES);
+eval_test!(eval_42_recall_decision_alternatives, &SCENARIO_RECALL_DECISION_ALTERNATIVES);
+eval_test!(eval_43_onboard_new_team_member, &SCENARIO_ONBOARD_NEW_TEAM_MEMBER);
+eval_test!(eval_44_autonomous_action_notice, &SCENARIO_AUTONOMOUS_ACTION_NOTICE);
+eval_test!(eval_45_scope_boundary_escalation, &SCENARIO_SCOPE_BOUNDARY_ESCALATION);
+eval_test!(eval_46_write_status_for_human, &SCENARIO_WRITE_STATUS_FOR_HUMAN);
+eval_test!(eval_47_cross_channel_digest, &SCENARIO_CROSS_CHANNEL_DIGEST);
+eval_test!(eval_48_connect_related_information, &SCENARIO_CONNECT_RELATED_INFORMATION);
+
+// Superhuman tier — 20 stories of extraordinary PM judgment
+eval_test!(eval_49_silent_collision, &SCENARIO_SILENT_COLLISION);
+eval_test!(eval_50_calendar_blindspot, &SCENARIO_CALENDAR_BLINDSPOT);
+eval_test!(eval_51_unasked_question, &SCENARIO_UNASKED_QUESTION);
+eval_test!(eval_52_misread_metric, &SCENARIO_MISREAD_METRIC);
+eval_test!(eval_53_budget_interpreter, &SCENARIO_BUDGET_INTERPRETER);
+eval_test!(eval_54_three_ticket_pattern, &SCENARIO_THREE_TICKET_PATTERN);
+eval_test!(eval_55_meeting_assassin, &SCENARIO_MEETING_ASSASSIN);
+eval_test!(eval_56_first_day_briefing, &SCENARIO_FIRST_DAY_BRIEFING);
+eval_test!(eval_57_scope_surgeon, &SCENARIO_SCOPE_SURGEON);
+eval_test!(eval_58_green_test_trap, &SCENARIO_GREEN_TEST_TRAP);
+eval_test!(eval_59_thread_therapist, &SCENARIO_THREAD_THERAPIST);
+eval_test!(eval_60_silent_failure_premortem, &SCENARIO_SILENT_FAILURE_PREMORTEM);
+eval_test!(eval_61_timezone_play, &SCENARIO_TIMEZONE_PLAY);
+eval_test!(eval_62_debt_ledger, &SCENARIO_DEBT_LEDGER);
+eval_test!(eval_63_competitor_signal, &SCENARIO_COMPETITOR_SIGNAL);
+eval_test!(eval_64_roi_translator, &SCENARIO_ROI_TRANSLATOR);
+eval_test!(eval_65_reverse_escalation, &SCENARIO_REVERSE_ESCALATION);
+eval_test!(eval_66_lunch_decision, &SCENARIO_LUNCH_DECISION);
+eval_test!(eval_67_postmortem_reframe, &SCENARIO_POSTMORTEM_REFRAME);
+eval_test!(eval_68_rate_limit_ghost, &SCENARIO_RATE_LIMIT_GHOST);
+
 /// Runs all scenarios sequentially, prints a scorecard, and persists results
 /// to `eval_results.json`.
 #[tokio::test]
