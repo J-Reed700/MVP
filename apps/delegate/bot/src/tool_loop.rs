@@ -2,6 +2,7 @@ use serde_json::Value;
 use tracing::warn;
 
 use crate::budget::TokenBudget;
+use crate::db::Db;
 use crate::dynamic_registry::DynamicRegistry;
 use crate::event::DelegateEvent;
 use crate::messenger::Messenger;
@@ -40,12 +41,14 @@ pub async fn run_tool_loop(
     budget: &TokenBudget,
     config: &ToolLoopConfig,
     dynamic_registry: Option<&DynamicRegistry>,
+    db: &Db,
 ) -> ToolLoopOutcome {
     let ctx = ToolContext {
         messenger,
         ws,
         event,
         thread_ts,
+        db,
     };
     let mut conversation: Vec<Value> = vec![
         serde_json::json!({"role": "user", "content": initial_prompt}),

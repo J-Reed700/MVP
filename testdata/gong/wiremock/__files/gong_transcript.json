@@ -1,0 +1,25 @@
+{
+  "callTranscripts": [
+    {
+      "callId": "gong001",
+      "transcript": [
+        { "speakerId": "sp1", "topic": "Introduction", "sentences": [
+          { "start": 0.0, "end": 5.2, "text": "Thanks for joining, Jane. I wanted to check in on how onboarding is going for your team." }
+        ]},
+        { "speakerId": "sp2", "topic": "Onboarding Issues", "sentences": [
+          { "start": 5.5, "end": 15.0, "text": "Honestly, we're seeing about 40% of our users drop off at the profile setup step. It asks for too much information upfront." },
+          { "start": 15.2, "end": 22.0, "text": "Also, the password reset deep links aren't working on our Android 14 devices. That's a blocker for our rollout." }
+        ]},
+        { "speakerId": "sp1", "topic": "Remediation", "sentences": [
+          { "start": 22.5, "end": 35.0, "text": "We're actually redesigning the entire onboarding flow right now — Jira DEV-42. The new design in Figma has a skip option for non-essential fields. And the Android deep link bug is DEV-34, Carlos has a fix in PR #190." }
+        ]},
+        { "speakerId": "sp2", "topic": "Timeline", "sentences": [
+          { "start": 35.5, "end": 42.0, "text": "That's good to hear. When can we expect the new onboarding? We have a rollout deadline end of March." }
+        ]},
+        { "speakerId": "sp1", "topic": "Commitment", "sentences": [
+          { "start": 42.5, "end": 50.0, "text": "Design review is March 11, and Alice has the implementation in PR #189. We're targeting v2.2.0 for end of March. I'll share the Figma designs with you for early feedback." }
+        ]}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "request": {
+    "method": "POST",
+    "urlPathPattern": "/v1/databases/[a-f0-9-]+/query"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "bodyFileName": "notion_database_response.json"
+  }
+}

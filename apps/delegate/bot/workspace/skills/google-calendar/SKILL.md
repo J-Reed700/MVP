@@ -26,11 +26,12 @@ tools_json: |
             "type": "integer",
             "description": "Max events to return (default 10)"
           }
-        }
+        },
+        "required": ["calendar_id"]
       },
       "handler": "http",
       "method": "GET",
-      "url_template": "https://www.googleapis.com/calendar/v3/calendars/{{calendar_id}}/events?timeMin={{time_min}}&timeMax={{time_max}}&maxResults={{max_results}}&singleEvents=true&orderBy=startTime",
+      "url_template": "{{env.GOOGLE_BASE_URL}}/calendar/v3/calendars/{{calendar_id}}/events?timeMin={{time_min}}&timeMax={{time_max}}&maxResults={{max_results}}&singleEvents=true&orderBy=startTime",
       "headers": {
         "Authorization": "Bearer {{env.GOOGLE_ACCESS_TOKEN}}",
         "Accept": "application/json"
@@ -55,7 +56,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "GET",
-      "url_template": "https://www.googleapis.com/calendar/v3/calendars/{{calendar_id}}/events/{{event_id}}",
+      "url_template": "{{env.GOOGLE_BASE_URL}}/calendar/v3/calendars/{{calendar_id}}/events/{{event_id}}",
       "headers": {
         "Authorization": "Bearer {{env.GOOGLE_ACCESS_TOKEN}}",
         "Accept": "application/json"
@@ -70,7 +71,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "GET",
-      "url_template": "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=50",
+      "url_template": "{{env.GOOGLE_BASE_URL}}/calendar/v3/users/me/calendarList?maxResults=50",
       "headers": {
         "Authorization": "Bearer {{env.GOOGLE_ACCESS_TOKEN}}",
         "Accept": "application/json"
@@ -99,7 +100,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://www.googleapis.com/calendar/v3/freeBusy",
+      "url_template": "{{env.GOOGLE_BASE_URL}}/calendar/v3/freeBusy",
       "headers": {
         "Authorization": "Bearer {{env.GOOGLE_ACCESS_TOKEN}}",
         "Content-Type": "application/json"

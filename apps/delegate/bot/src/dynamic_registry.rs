@@ -295,6 +295,19 @@ async fn substitute_template(
             result = result.replace(&placeholder, &replacement);
         }
     }
+    // Clean up any unresolved arg placeholders (optional params the LLM didn't provide)
+    while let Some(start) = result.find("{{") {
+        // Don't touch {{env.}} placeholders — those are handled below
+        if result[start..].starts_with("{{env.") {
+            break;
+        }
+        if let Some(end) = result[start..].find("}}") {
+            result = format!("{}{}", &result[..start], &result[start + end + 2..]);
+        } else {
+            break;
+        }
+    }
+
     // Replace {{env.VAR_NAME}} — try credential store first, fall back to env var
     while let Some(start) = result.find("{{env.") {
         if let Some(end) = result[start..].find("}}") {
@@ -550,5 +563,20 @@ mod tests {
                 "Tool '{}' should require approval", tool_name
             );
         }
+    }
+
+    #[tokio::test]
+    async fn substitute_template_cleans_missing_optional_args() {
+        // Simulates jira_create_issue where description and issue_type are optional
+        let args = serde_json::json!({"project_key": "DEV", "summary": "My issue"});
+        let body = substitute_template(
+            r#"{"fields":{"project":{"key":"{{project_key}}"},"summary":"{{summary}}","issuetype":{"name":"{{issue_type}}"}}}"#,
+            &args,
+            None,
+        ).await;
+        // Unresolved {{issue_type}} should be removed, not left as literal
+        assert!(!body.contains("{{issue_type}}"));
+        assert!(body.contains(r#""key":"DEV""#));
+        assert!(body.contains(r#""summary":"My issue""#));
     }
 }

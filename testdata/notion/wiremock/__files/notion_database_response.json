@@ -1,0 +1,78 @@
+{
+  "object": "list",
+  "results": [
+    {
+      "object": "page",
+      "id": "db-row-001",
+      "properties": {
+        "Name": {
+          "title": [{ "text": { "content": "Onboarding Redesign" } }]
+        },
+        "Status": { "select": { "name": "In Progress" } },
+        "Priority": { "select": { "name": "P0" } },
+        "Owner": { "people": [{ "name": "Bob Park" }] },
+        "Eng Lead": { "people": [{ "name": "Alice Chen" }] },
+        "Due Date": { "date": { "start": "2026-03-28" } },
+        "Jira": { "url": "https://acme.atlassian.net/browse/DEV-42" },
+        "GitHub PR": { "url": "https://github.com/acme/product/pull/189" },
+        "Figma": { "url": "https://www.figma.com/file/abc123XYZ" },
+        "Notes": { "rich_text": [{ "text": { "content": "Blocked on mobile deep link fix (DEV-34). Design approved except profile step skip option." } }] }
+      }
+    },
+    {
+      "object": "page",
+      "id": "db-row-002",
+      "properties": {
+        "Name": {
+          "title": [{ "text": { "content": "API v2 Launch" } }]
+        },
+        "Status": { "select": { "name": "In Progress" } },
+        "Priority": { "select": { "name": "P1" } },
+        "Owner": { "people": [{ "name": "Bob Park" }] },
+        "Eng Lead": { "people": [{ "name": "Carlos Rivera" }] },
+        "Due Date": { "date": { "start": "2026-04-15" } },
+        "Jira": { "url": "https://acme.atlassian.net/browse/DEV-50" },
+        "GitHub PR": { "url": "https://github.com/acme/product/pull/191" },
+        "Figma": { "url": null },
+        "Notes": { "rich_text": [{ "text": { "content": "Kong gateway ADR finalized in Confluence. Rate limiting in progress (ENG-102). Connection pooling (ENG-105) still in backlog." } }] }
+      }
+    },
+    {
+      "object": "page",
+      "id": "db-row-003",
+      "properties": {
+        "Name": {
+          "title": [{ "text": { "content": "Dark Mode" } }]
+        },
+        "Status": { "select": { "name": "Design" } },
+        "Priority": { "select": { "name": "P2" } },
+        "Owner": { "people": [{ "name": "Bob Park" }] },
+        "Eng Lead": { "people": [{ "name": "Eve Zhang" }] },
+        "Due Date": { "date": { "start": "2026-04-30" } },
+        "Jira": { "url": "https://acme.atlassian.net/browse/DEV-55" },
+        "GitHub PR": { "url": "https://github.com/acme/product/pull/192" },
+        "Figma": { "url": "https://www.figma.com/file/def456ABC" },
+        "Notes": { "rich_text": [{ "text": { "content": "Diana exploring in Dashboard Redesign Figma file. Depends on chart perf fix (#228)." } }] }
+      }
+    },
+    {
+      "object": "page",
+      "id": "db-row-004",
+      "properties": {
+        "Name": {
+          "title": [{ "text": { "content": "Mobile Deep Link Fix" } }]
+        },
+        "Status": { "select": { "name": "In Review" } },
+        "Priority": { "select": { "name": "P0" } },
+        "Owner": { "people": [{ "name": "Carlos Rivera" }] },
+        "Eng Lead": { "people": [{ "name": "Carlos Rivera" }] },
+        "Due Date": { "date": { "start": "2026-03-12" } },
+        "Jira": { "url": "https://acme.atlassian.net/browse/DEV-34" },
+        "GitHub PR": { "url": "https://github.com/acme/product/pull/190" },
+        "Figma": { "url": null },
+        "Notes": { "rich_text": [{ "text": { "content": "Blocking v2.1.0 release AND onboarding redesign mobile testing. CI failing due to flaky tests (ENG-103, Diana fixing). Customer-reported in Gong call." } }] }
+      }
+    }
+  ],
+  "has_more": false
+}

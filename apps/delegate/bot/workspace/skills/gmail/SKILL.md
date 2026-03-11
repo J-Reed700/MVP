@@ -23,7 +23,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "GET",
-      "url_template": "https://gmail.googleapis.com/gmail/v1/users/me/messages?q={{query}}&maxResults={{max_results}}",
+      "url_template": "{{env.GOOGLE_BASE_URL}}/gmail/v1/users/me/messages?q={{query}}&maxResults={{max_results}}",
       "headers": {
         "Authorization": "Bearer {{env.GOOGLE_ACCESS_TOKEN}}",
         "Accept": "application/json"
@@ -44,7 +44,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "GET",
-      "url_template": "https://gmail.googleapis.com/gmail/v1/users/me/messages/{{message_id}}?format=full",
+      "url_template": "{{env.GOOGLE_BASE_URL}}/gmail/v1/users/me/messages/{{message_id}}?format=full",
       "headers": {
         "Authorization": "Bearer {{env.GOOGLE_ACCESS_TOKEN}}",
         "Accept": "application/json"
@@ -65,7 +65,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "url_template": "{{env.GOOGLE_BASE_URL}}/gmail/v1/users/me/messages/send",
       "headers": {
         "Authorization": "Bearer {{env.GOOGLE_ACCESS_TOKEN}}",
         "Content-Type": "application/json"
@@ -87,7 +87,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
+      "url_template": "{{env.GOOGLE_BASE_URL}}/gmail/v1/users/me/drafts",
       "headers": {
         "Authorization": "Bearer {{env.GOOGLE_ACCESS_TOKEN}}",
         "Content-Type": "application/json"
@@ -103,7 +103,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "GET",
-      "url_template": "https://gmail.googleapis.com/gmail/v1/users/me/labels",
+      "url_template": "{{env.GOOGLE_BASE_URL}}/gmail/v1/users/me/labels",
       "headers": {
         "Authorization": "Bearer {{env.GOOGLE_ACCESS_TOKEN}}",
         "Accept": "application/json"
@@ -124,7 +124,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "GET",
-      "url_template": "https://gmail.googleapis.com/gmail/v1/users/me/threads/{{thread_id}}?format=full",
+      "url_template": "{{env.GOOGLE_BASE_URL}}/gmail/v1/users/me/threads/{{thread_id}}?format=full",
       "headers": {
         "Authorization": "Bearer {{env.GOOGLE_ACCESS_TOKEN}}",
         "Accept": "application/json"
@@ -149,7 +149,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      "url_template": "{{env.GOOGLE_BASE_URL}}/gmail/v1/users/me/messages/send",
       "headers": {
         "Authorization": "Bearer {{env.GOOGLE_ACCESS_TOKEN}}",
         "Content-Type": "application/json"

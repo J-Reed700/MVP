@@ -944,7 +944,7 @@ fn schema_integration_status() -> Value {
         "type": "function",
         "function": {
             "name": "integration_status",
-            "description": "Check which integration providers are connected via OAuth and which are available to connect.",
+            "description": "Check which integration providers are connected (via OAuth or API key/env var) and which are available to connect.",
             "parameters": {
                 "type": "object",
                 "properties": {}

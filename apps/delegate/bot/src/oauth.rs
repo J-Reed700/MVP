@@ -196,6 +196,36 @@ impl CredentialStore {
                 drop(cache); // Release read lock before potentially refreshing
                 self.get_token("google").await
             }
+            "GITHUB_TOKEN" => cache.get("github").map(|c| c.access_token.clone()),
+            "FIGMA_ACCESS_TOKEN" => cache.get("figma").map(|c| c.access_token.clone()),
+            "GONG_AUTHORIZATION" => {
+                if let Some(c) = cache.get("gong") {
+                    Some(format!("Bearer {}", c.access_token))
+                } else if let (Ok(key), Ok(secret)) = (
+                    std::env::var("GONG_ACCESS_KEY"),
+                    std::env::var("GONG_ACCESS_KEY_SECRET"),
+                ) {
+                    use base64::Engine;
+                    let encoded = base64::engine::general_purpose::STANDARD
+                        .encode(format!("{key}:{secret}"));
+                    Some(format!("Basic {encoded}"))
+                } else {
+                    None
+                }
+            }
+            // Base URL defaults — env var override takes priority via substitute_template fallback
+            "LINEAR_BASE_URL" => Some(std::env::var("LINEAR_BASE_URL")
+                .unwrap_or_else(|_| "https://api.linear.app".to_string())),
+            "NOTION_BASE_URL" => Some(std::env::var("NOTION_BASE_URL")
+                .unwrap_or_else(|_| "https://api.notion.com".to_string())),
+            "GITHUB_BASE_URL" => Some(std::env::var("GITHUB_BASE_URL")
+                .unwrap_or_else(|_| "https://api.github.com".to_string())),
+            "FIGMA_BASE_URL" => Some(std::env::var("FIGMA_BASE_URL")
+                .unwrap_or_else(|_| "https://api.figma.com".to_string())),
+            "GONG_BASE_URL" => Some(std::env::var("GONG_BASE_URL")
+                .unwrap_or_else(|_| "https://api.gong.io".to_string())),
+            "GOOGLE_BASE_URL" => Some(std::env::var("GOOGLE_BASE_URL")
+                .unwrap_or_else(|_| "https://www.googleapis.com".to_string())),
             _ => None,
         }
     }
@@ -451,6 +481,64 @@ pub fn load_provider_configs() -> HashMap<String, OAuthProviderConfig> {
                     m.insert("prompt".to_string(), "consent".to_string());
                     m
                 },
+            },
+        );
+    }
+
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("GITHUB_CLIENT_ID"),
+        std::env::var("GITHUB_CLIENT_SECRET"),
+    ) {
+        configs.insert(
+            "github".to_string(),
+            OAuthProviderConfig {
+                name: "github".to_string(),
+                client_id: id,
+                client_secret: secret,
+                auth_url: "https://github.com/login/oauth/authorize".to_string(),
+                token_url: "https://github.com/login/oauth/access_token".to_string(),
+                scopes: vec!["repo".to_string(), "read:org".to_string()],
+                extra_auth_params: HashMap::new(),
+            },
+        );
+    }
+
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("FIGMA_CLIENT_ID"),
+        std::env::var("FIGMA_CLIENT_SECRET"),
+    ) {
+        configs.insert(
+            "figma".to_string(),
+            OAuthProviderConfig {
+                name: "figma".to_string(),
+                client_id: id,
+                client_secret: secret,
+                auth_url: "https://www.figma.com/oauth".to_string(),
+                token_url: "https://api.figma.com/v1/oauth/token".to_string(),
+                scopes: vec!["files:read".to_string(), "file_comments:write".to_string()],
+                extra_auth_params: HashMap::new(),
+            },
+        );
+    }
+
+    if let (Ok(id), Ok(secret)) = (
+        std::env::var("GONG_CLIENT_ID"),
+        std::env::var("GONG_CLIENT_SECRET"),
+    ) {
+        configs.insert(
+            "gong".to_string(),
+            OAuthProviderConfig {
+                name: "gong".to_string(),
+                client_id: id,
+                client_secret: secret,
+                auth_url: "https://app.gong.io/oauth2/authorize".to_string(),
+                token_url: "https://app.gong.io/oauth2/generate-customer-token".to_string(),
+                scopes: vec![
+                    "api:calls:read:extensive".to_string(),
+                    "api:calls:read:transcript".to_string(),
+                    "api:users:read".to_string(),
+                ],
+                extra_auth_params: HashMap::new(),
             },
         );
     }
