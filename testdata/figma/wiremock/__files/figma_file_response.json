@@ -1,0 +1,53 @@
+{
+  "name": "Onboarding Flow — v3",
+  "role": "viewer",
+  "lastModified": "2026-03-08T14:30:00Z",
+  "editorType": "figma",
+  "thumbnailUrl": "https://figma-thumbnails.example.com/onboarding-v3.png",
+  "version": "456789012",
+  "document": {
+    "id": "0:0",
+    "name": "Document",
+    "type": "DOCUMENT",
+    "children": [
+      {
+        "id": "1:1",
+        "name": "Welcome Screen",
+        "type": "CANVAS",
+        "children": []
+      },
+      {
+        "id": "1:2",
+        "name": "Profile Setup (with skip option)",
+        "type": "CANVAS",
+        "children": []
+      },
+      {
+        "id": "1:3",
+        "name": "Team Invite",
+        "type": "CANVAS",
+        "children": []
+      },
+      {
+        "id": "1:4",
+        "name": "Completion & Dashboard Preview",
+        "type": "CANVAS",
+        "children": []
+      },
+      {
+        "id": "1:5",
+        "name": "Mobile Variants",
+        "type": "CANVAS",
+        "children": []
+      }
+    ]
+  },
+  "components": {
+    "c1": { "key": "c1", "name": "PrimaryButton", "description": "Main CTA button — used on every onboarding step" },
+    "c2": { "key": "c2", "name": "InputField", "description": "Standard text input from design system" },
+    "c3": { "key": "c3", "name": "ProgressBar", "description": "Step indicator — matches Jira DEV-42 subtask structure" },
+    "c4": { "key": "c4", "name": "SkipLink", "description": "Skip for now link — added per Alice's feedback" },
+    "c5": { "key": "c5", "name": "AvatarUploader", "description": "Profile photo upload component" }
+  },
+  "schemaVersion": 0
+}

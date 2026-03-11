@@ -13,7 +13,7 @@ pub struct HeartbeatConfig {
     pub qa_token_budget: usize,
     /// Token budget for triage classification
     pub triage_token_budget: usize,
-    /// Daily token budget across all LLM calls (default: 500_000)
+    /// Daily token budget across all LLM calls (default: 1000_000_000)
     pub daily_token_budget: u64,
     /// Channel name for system notifications (budget exhaustion, errors, etc.)
     pub notification_channel: Option<String>,
@@ -47,7 +47,7 @@ impl Default for HeartbeatConfig {
             cron_jobs: Vec::new(),
             qa_token_budget: 8000,
             triage_token_budget: 500,
-            daily_token_budget: 500_000,
+            daily_token_budget: 1000_000,
             notification_channel: None,
             default_approver: None,
             backup_approver: None,
@@ -154,19 +154,30 @@ fn parse_heartbeat_content(content: &str, validate_id: &dyn Fn(&str) -> bool) ->
 }
 
 /// Validate that a parsed value looks like a valid user ID using the
-/// transport-provided validator. If invalid, logs a warning and returns None.
+/// transport-provided validator. If invalid, returns None. Only logs a warning
+/// for values that look like they were *intended* to be user IDs (not obvious
+/// placeholders like "(not configured)").
 fn validate_approver_id(value: String, label: &str, validate_id: &dyn Fn(&str) -> bool) -> Option<String> {
     let trimmed = value.trim();
     if validate_id(trimmed) {
         Some(trimmed.to_string())
     } else {
-        tracing::warn!(
-            value = %trimmed,
-            label = %label,
-            "HEARTBEAT.md: expected a valid user ID for {}, got '{}' — ignoring",
-            label,
-            trimmed,
-        );
+        // Don't warn on obvious placeholders — they're intentional, not typos
+        let lower = trimmed.to_lowercase();
+        let is_placeholder = lower.starts_with('(')
+            || lower.contains("not configured")
+            || lower.contains("none")
+            || lower.contains("n/a")
+            || lower.is_empty();
+        if !is_placeholder {
+            tracing::warn!(
+                value = %trimmed,
+                label = %label,
+                "HEARTBEAT.md: expected a valid user ID for {}, got '{}' — ignoring",
+                label,
+                trimmed,
+            );
+        }
         None
     }
 }

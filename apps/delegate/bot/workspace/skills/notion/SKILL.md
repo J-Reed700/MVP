@@ -23,7 +23,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://api.notion.com/v1/search",
+      "url_template": "{{env.NOTION_BASE_URL}}/v1/search",
       "headers": {
         "Authorization": "Bearer {{env.NOTION_API_KEY}}",
         "Content-Type": "application/json",
@@ -46,7 +46,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "GET",
-      "url_template": "https://api.notion.com/v1/pages/{{page_id}}",
+      "url_template": "{{env.NOTION_BASE_URL}}/v1/pages/{{page_id}}",
       "headers": {
         "Authorization": "Bearer {{env.NOTION_API_KEY}}",
         "Notion-Version": "2022-06-28"
@@ -67,7 +67,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "GET",
-      "url_template": "https://api.notion.com/v1/blocks/{{page_id}}/children?page_size=100",
+      "url_template": "{{env.NOTION_BASE_URL}}/v1/blocks/{{page_id}}/children?page_size=100",
       "headers": {
         "Authorization": "Bearer {{env.NOTION_API_KEY}}",
         "Notion-Version": "2022-06-28"
@@ -85,7 +85,7 @@ tools_json: |
           },
           "parent_type": {
             "type": "string",
-            "description": "'page_id' or 'database_id' (default: page_id)"
+            "description": "'page_id' or 'database_id'"
           },
           "title": {
             "type": "string",
@@ -96,11 +96,11 @@ tools_json: |
             "description": "Page content as a single text block (plain text, will be added as a paragraph)"
           }
         },
-        "required": ["parent_id", "title"]
+        "required": ["parent_id", "parent_type", "title"]
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://api.notion.com/v1/pages",
+      "url_template": "{{env.NOTION_BASE_URL}}/v1/pages",
       "headers": {
         "Authorization": "Bearer {{env.NOTION_API_KEY}}",
         "Content-Type": "application/json",
@@ -124,14 +124,14 @@ tools_json: |
           },
           "page_size": {
             "type": "integer",
-            "description": "Number of results (default 10)"
+            "description": "Number of results to return (e.g. 10)"
           }
         },
-        "required": ["database_id"]
+        "required": ["database_id", "page_size"]
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://api.notion.com/v1/databases/{{database_id}}/query",
+      "url_template": "{{env.NOTION_BASE_URL}}/v1/databases/{{database_id}}/query",
       "headers": {
         "Authorization": "Bearer {{env.NOTION_API_KEY}}",
         "Content-Type": "application/json",
@@ -158,7 +158,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "PATCH",
-      "url_template": "https://api.notion.com/v1/blocks/{{page_id}}/children",
+      "url_template": "{{env.NOTION_BASE_URL}}/v1/blocks/{{page_id}}/children",
       "headers": {
         "Authorization": "Bearer {{env.NOTION_API_KEY}}",
         "Content-Type": "application/json",
@@ -185,7 +185,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://api.notion.com/v1/pages",
+      "url_template": "{{env.NOTION_BASE_URL}}/v1/pages",
       "headers": {
         "Authorization": "Bearer {{env.NOTION_API_KEY}}",
         "Content-Type": "application/json",
@@ -212,7 +212,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "PATCH",
-      "url_template": "https://api.notion.com/v1/pages/{{page_id}}",
+      "url_template": "{{env.NOTION_BASE_URL}}/v1/pages/{{page_id}}",
       "headers": {
         "Authorization": "Bearer {{env.NOTION_API_KEY}}",
         "Content-Type": "application/json",

@@ -16,14 +16,14 @@ tools_json: |
           },
           "first": {
             "type": "integer",
-            "description": "Number of results (default 10)"
+            "description": "Number of results to return (e.g. 10)"
           }
         },
-        "required": ["query"]
+        "required": ["query", "first"]
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://api.linear.app/graphql",
+      "url_template": "{{env.LINEAR_BASE_URL}}/graphql",
       "headers": {
         "Authorization": "{{env.LINEAR_API_KEY}}",
         "Content-Type": "application/json"
@@ -45,7 +45,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://api.linear.app/graphql",
+      "url_template": "{{env.LINEAR_BASE_URL}}/graphql",
       "headers": {
         "Authorization": "{{env.LINEAR_API_KEY}}",
         "Content-Type": "application/json"
@@ -58,9 +58,9 @@ tools_json: |
       "parameters": {
         "type": "object",
         "properties": {
-          "team_key": {
+          "team_id": {
             "type": "string",
-            "description": "Team key (e.g. ENG)"
+            "description": "Team UUID (use linear_list_members or linear_search_issues to discover team IDs)"
           },
           "title": {
             "type": "string",
@@ -70,21 +70,21 @@ tools_json: |
             "type": "string",
             "description": "Issue description (markdown)"
           },
-          "priority": {
-            "type": "integer",
-            "description": "Priority: 0=none, 1=urgent, 2=high, 3=medium, 4=low"
+          "input_json": {
+            "type": "string",
+            "description": "Full JSON object for the mutation input. Must include teamId and title. Example: '{\"teamId\":\"uuid\",\"title\":\"Fix bug\",\"priority\":2,\"description\":\"Details\"}'"
           }
         },
-        "required": ["team_key", "title"]
+        "required": ["input_json"]
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://api.linear.app/graphql",
+      "url_template": "{{env.LINEAR_BASE_URL}}/graphql",
       "headers": {
         "Authorization": "{{env.LINEAR_API_KEY}}",
         "Content-Type": "application/json"
       },
-      "body_template": "{\"query\":\"mutation { issueCreate(input: { teamId: \\\"{{team_key}}\\\", title: \\\"{{title}}\\\", description: \\\"{{description}}\\\", priority: {{priority}} }) { success issue { id identifier title url } } }\"}"
+      "body_template": "{\"query\":\"mutation CreateIssue($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier title url } } }\",\"variables\":{\"input\":{{input_json}}}}"
     },
     {
       "name": "linear_update_issue",
@@ -105,7 +105,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://api.linear.app/graphql",
+      "url_template": "{{env.LINEAR_BASE_URL}}/graphql",
       "headers": {
         "Authorization": "{{env.LINEAR_API_KEY}}",
         "Content-Type": "application/json"
@@ -131,7 +131,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://api.linear.app/graphql",
+      "url_template": "{{env.LINEAR_BASE_URL}}/graphql",
       "headers": {
         "Authorization": "{{env.LINEAR_API_KEY}}",
         "Content-Type": "application/json"
@@ -146,13 +146,14 @@ tools_json: |
         "properties": {
           "first": {
             "type": "integer",
-            "description": "Number of projects to return (default 10)"
+            "description": "Number of projects to return (e.g. 10)"
           }
-        }
+        },
+        "required": ["first"]
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://api.linear.app/graphql",
+      "url_template": "{{env.LINEAR_BASE_URL}}/graphql",
       "headers": {
         "Authorization": "{{env.LINEAR_API_KEY}}",
         "Content-Type": "application/json"
@@ -174,7 +175,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://api.linear.app/graphql",
+      "url_template": "{{env.LINEAR_BASE_URL}}/graphql",
       "headers": {
         "Authorization": "{{env.LINEAR_API_KEY}}",
         "Content-Type": "application/json"
@@ -189,13 +190,14 @@ tools_json: |
         "properties": {
           "first": {
             "type": "integer",
-            "description": "Number of results (default 50)"
+            "description": "Number of results to return (e.g. 50)"
           }
-        }
+        },
+        "required": ["first"]
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://api.linear.app/graphql",
+      "url_template": "{{env.LINEAR_BASE_URL}}/graphql",
       "headers": {
         "Authorization": "{{env.LINEAR_API_KEY}}",
         "Content-Type": "application/json"
@@ -217,7 +219,7 @@ tools_json: |
       },
       "handler": "http",
       "method": "POST",
-      "url_template": "https://api.linear.app/graphql",
+      "url_template": "{{env.LINEAR_BASE_URL}}/graphql",
       "headers": {
         "Authorization": "{{env.LINEAR_API_KEY}}",
         "Content-Type": "application/json"
@@ -246,7 +248,7 @@ Requires: `LINEAR_API_KEY` — Linear API key (Settings → API → Personal API
 ## Important Notes
 
 - Linear uses UUIDs internally — always search/get first to find the ID before updating
-- `team_key` for creation is the team's UUID, not the short key — search for a team issue first to discover it
+- `team_id` for creation is a UUID — use `linear_search_issues` to discover team IDs from existing issues
 - Priority is numeric: 0=none, 1=urgent, 2=high, 3=medium, 4=low
 - Descriptions support markdown
 

@@ -2,6 +2,7 @@ use chrono::Duration;
 use serde_json::Value;
 use tracing::{info, warn};
 
+use crate::db::Db;
 use crate::event::DelegateEvent;
 use crate::logger;
 use crate::messenger::Messenger;
@@ -17,6 +18,7 @@ pub struct ToolContext<'a> {
     pub ws: &'a Workspace,
     pub event: &'a DelegateEvent,
     pub thread_ts: &'a str,
+    pub db: &'a Db,
 }
 
 // ── Dispatch ───────────────────────────────────────────────────────────
@@ -737,29 +739,12 @@ async fn handle_set_reminder(args: &Value, ctx: &ToolContext<'_>) -> String {
         }
     };
 
-    let now = chrono::Local::now();
+    let now = chrono::Utc::now();
     let fire_at = now + Duration::minutes(delay_minutes);
 
-    let reminder = serde_json::json!({
-        "id": format!("r-{}", now.timestamp()),
-        "channel": channel,
-        "user": ctx.event.user.as_str(),
-        "message": message,
-        "fire_at": fire_at.to_rfc3339(),
-        "created_at": now.to_rfc3339(),
-    });
-
-    let reminders_path = ctx.ws.path().join("reminders.json");
-    let mut reminders: Vec<Value> = match tokio::fs::read_to_string(&reminders_path).await {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
-
-    reminders.push(reminder);
-
-    match tokio::fs::write(&reminders_path, serde_json::to_string_pretty(&reminders).unwrap_or_default()).await {
+    match ctx.db.add_reminder(&channel, ctx.event.user.as_str(), message, fire_at).await {
         Ok(_) => {
-            let time_str = fire_at.format("%H:%M").to_string();
+            let time_str = fire_at.with_timezone(&chrono::Local).format("%H:%M").to_string();
             info!(message = %message, fire_at = %time_str, "Reminder set");
             format!("Reminder set for {time_str}: {message}")
         }
@@ -855,7 +840,7 @@ async fn handle_update_intents(args: &Value, ctx: &ToolContext<'_>) -> String {
 
     info!(reason = %reason, "Updating INTENTS.md");
     logger::append_log(
-        ctx.ws.path(),
+        ctx.db,
         "internal",
         "delegate-bot",
         &format!("[intents-update] {reason}"),
@@ -875,7 +860,9 @@ async fn handle_connect_integration(args: &Value, ctx: &ToolContext<'_>) -> Stri
         Err(e) => return e,
     };
 
-    let valid_providers = ["atlassian", "linear", "notion", "google"];
+    let valid_providers = [
+        "atlassian", "linear", "notion", "google", "github", "figma", "gong",
+    ];
     if !valid_providers.contains(&provider) {
         return format!(
             "Unknown provider '{provider}'. Available: {}",
@@ -898,6 +885,9 @@ async fn handle_connect_integration(args: &Value, ctx: &ToolContext<'_>) -> Stri
         "linear" => "Linear",
         "notion" => "Notion",
         "google" => "Google Calendar + Gmail",
+        "github" => "GitHub",
+        "figma" => "Figma",
+        "gong" => "Gong",
         _ => provider,
     };
 
@@ -911,17 +901,24 @@ async fn handle_integration_status(ctx: &ToolContext<'_>) -> String {
     let mut connected = Vec::new();
     let mut available = Vec::new();
 
-    let provider_info = [
-        ("atlassian", "Jira + Confluence"),
-        ("linear", "Linear"),
-        ("notion", "Notion"),
-        ("google", "Google Calendar + Gmail"),
+    // Each entry: (provider_key, label, env_var fallbacks that indicate connectivity)
+    let provider_info: &[(&str, &str, &[&str])] = &[
+        ("atlassian", "Jira + Confluence", &["JIRA_AUTH", "CONFLUENCE_AUTH"]),
+        ("linear", "Linear", &["LINEAR_API_KEY"]),
+        ("notion", "Notion", &["NOTION_API_KEY"]),
+        ("google", "Google Calendar + Gmail", &["GOOGLE_ACCESS_TOKEN"]),
+        ("github", "GitHub", &["GITHUB_TOKEN"]),
+        ("figma", "Figma", &["FIGMA_ACCESS_TOKEN"]),
+        ("gong", "Gong", &["GONG_ACCESS_KEY"]),
     ];
 
-    for (provider, label) in &provider_info {
+    for (provider, label, env_fallbacks) in provider_info {
         let cred_file = cred_dir.join(format!("{provider}.json"));
         if cred_file.exists() {
-            connected.push(format!("{label} ({provider})"));
+            connected.push(format!("{label} ({provider}, OAuth)"));
+        } else if env_fallbacks.iter().any(|v| std::env::var(v).is_ok()) {
+            // Connected via env var (API key / token)
+            connected.push(format!("{label} ({provider}, env var)"));
         } else {
             // Check if OAuth is configured for this provider
             let env_key = format!("{}_CLIENT_ID", provider.to_uppercase());
@@ -952,7 +949,7 @@ async fn handle_integration_status(ctx: &ToolContext<'_>) -> String {
     }
 
     if result.is_empty() {
-        result = "No OAuth providers configured. Set ATLASSIAN_CLIENT_ID/SECRET, LINEAR_CLIENT_ID/SECRET, NOTION_CLIENT_ID/SECRET, or GOOGLE_CLIENT_ID/SECRET to enable.".to_string();
+        result = "No integrations configured. Set OAuth credentials (e.g. ATLASSIAN_CLIENT_ID/SECRET) or API keys (e.g. JIRA_AUTH, LINEAR_API_KEY) to enable.".to_string();
     }
 
     result

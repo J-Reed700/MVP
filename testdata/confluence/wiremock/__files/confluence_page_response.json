@@ -1,0 +1,18 @@
+{
+  "id": "65542",
+  "type": "page",
+  "status": "current",
+  "title": "Onboarding Service Technical Spec",
+  "space": { "key": "ENG", "name": "Engineering" },
+  "version": { "number": 4, "when": "2026-03-05T09:00:00Z" },
+  "body": {
+    "storage": {
+      "value": "<h2>Overview</h2><p>Technical specification for the User Onboarding Redesign (Jira <a href='https://acme.atlassian.net/browse/DEV-42'>DEV-42</a>). Product requirements in <a href='https://www.notion.so/PRD-User-Onboarding-Redesign'>Notion PRD</a>. UI designs in <a href='https://www.figma.com/file/abc123XYZ'>Figma</a>.</p><h2>Architecture</h2><h3>Auth Changes</h3><p>The new flow requires OAuth 2.0 PKCE for mobile clients (Linear <a href='#'>ENG-101</a>, Alice implementing). This replaces the legacy implicit grant flow and unblocks mobile deep links — currently broken on Android 14+ (Jira DEV-34, GitHub <a href='https://github.com/acme/product/issues/234'>#234</a>).</p><h3>Real-time Progress</h3><p>WebSocket-based progress sync across tabs/devices (Linear ENG-104, completed Sprint 11). Uses the same WS infrastructure as the notification system.</p><h3>Data Model</h3><p>New tables: <code>onboarding_progress</code>, <code>onboarding_step_completion</code>. Migration in PR <a href='https://github.com/acme/product/pull/189'>#189</a>.</p><h2>Dependencies</h2><ul><li>PKCE auth migration (ENG-101) — in progress</li><li>Android deep link fix (DEV-34, PR #190) — blocked by flaky CI (ENG-103)</li><li>API v2 versioning (DEV-50, PR #191) — onboarding API will use v2 endpoints</li></ul><h2>Rollout Plan</h2><p>Phase 1: New users only (behind feature flag). Phase 2: Existing users see upgrade prompt. See Notion 'API v2 Launch Plan' for coordinated rollout with API v2.</p>",
+      "representation": "storage"
+    }
+  },
+  "_links": {
+    "webui": "/spaces/ENG/pages/65542/Onboarding+Service+Technical+Spec",
+    "self": "https://acme.atlassian.net/wiki/rest/api/content/65542"
+  }
+}

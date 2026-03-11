@@ -1,9 +1,9 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::Path;
 use tracing::{info, warn};
 
+use crate::db::Db;
 use crate::event::DelegateEvent;
 use crate::heartbeat::HeartbeatConfig;
 use crate::messenger::{ChannelId, Messenger, MessageTs, UserId};
@@ -89,90 +89,9 @@ impl PendingAction {
     }
 }
 
-/// Load all pending/escalated actions from workspace/pending/*.json.
-/// Used by scan_timeouts (periodic, not per-event).
-pub async fn load_pending(workspace: &Path) -> Vec<PendingAction> {
-    let pending_dir = workspace.join("pending");
-    let mut actions = Vec::new();
-
-    let mut entries = match tokio::fs::read_dir(&pending_dir).await {
-        Ok(e) => e,
-        Err(_) => return actions,
-    };
-
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let content = match tokio::fs::read_to_string(&path).await {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(path = %path.display(), error = %e, "Failed to read pending action file");
-                continue;
-            }
-        };
-        let action: PendingAction = match serde_json::from_str(&content) {
-            Ok(a) => a,
-            Err(e) => {
-                warn!(path = %path.display(), error = %e, "Failed to parse pending action JSON");
-                continue;
-            }
-        };
-        if action.state == ApprovalState::Pending || action.state == ApprovalState::Escalated {
-            actions.push(action);
-        }
-    }
-
-    actions
-}
-
-/// Find a pending action by its DM coordinates (channel, timestamp).
-/// More efficient than load_pending for reaction handling — stops at first match.
-pub async fn find_by_dm(
-    workspace: &Path,
-    dm_channel: &str,
-    dm_ts: &str,
-) -> Option<PendingAction> {
-    let pending_dir = workspace.join("pending");
-    let mut entries = match tokio::fs::read_dir(&pending_dir).await {
-        Ok(e) => e,
-        Err(_) => return None,
-    };
-
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let content = match tokio::fs::read_to_string(&path).await {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let action: PendingAction = match serde_json::from_str(&content) {
-            Ok(a) => a,
-            Err(_) => continue,
-        };
-        if (action.state == ApprovalState::Pending || action.state == ApprovalState::Escalated)
-            && action.dm_channel.as_deref() == Some(dm_channel)
-            && action.dm_ts.as_deref() == Some(dm_ts)
-        {
-            return Some(action);
-        }
-    }
-
-    None
-}
-
-/// Save a pending action to workspace/pending/{id}.json.
-pub async fn save_pending(workspace: &Path, action: &PendingAction) -> Result<()> {
-    let pending_dir = workspace.join("pending");
-    tokio::fs::create_dir_all(&pending_dir).await?;
-
-    let filename = format!("{}.json", action.id);
-    let content = serde_json::to_string_pretty(action)?;
-    tokio::fs::write(pending_dir.join(&filename), &content).await?;
-
+/// Save a pending action to the database.
+pub async fn save_pending(db: &Db, action: &PendingAction) -> Result<()> {
+    db.save_approval(action).await?;
     info!(id = %action.id, tool = %action.tool_name, state = ?action.state, "Saved pending action");
     Ok(())
 }
@@ -217,21 +136,22 @@ pub async fn write_audit_trail(
 }
 
 /// Handle a reaction event — check if it matches any pending approval DM.
-/// Returns true if the reaction was handled (matched a pending action).
 pub async fn handle_reaction(
     event: &DelegateEvent,
     messenger: &dyn Messenger,
     ws: &Workspace,
+    db: &Db,
 ) -> Result<bool> {
     let reaction = event.content.trim_matches(':');
 
-    // Targeted lookup instead of loading all pending files
-    let mut action = match find_by_dm(ws.path(), event.channel.as_str(), event.timestamp.as_str()).await {
+    let mut action = match db
+        .find_approval_by_dm(event.channel.as_str(), event.timestamp.as_str())
+        .await?
+    {
         Some(a) => a,
         None => return Ok(false),
     };
 
-    // Approve reactions
     if matches!(
         reaction,
         "white_check_mark" | "heavy_check_mark" | "thumbsup" | "+1" | "check"
@@ -239,9 +159,8 @@ pub async fn handle_reaction(
         action.state = ApprovalState::Approved;
         action.resolved_at = Some(chrono::Local::now().to_rfc3339());
         action.resolution_note = Some(format!("Approved by {} via reaction", event.user));
-        save_pending(ws.path(), &action).await?;
+        save_pending(db, &action).await?;
 
-        // Execute the deferred tool
         let tool_call = ToolCall {
             id: format!("approval-{}", action.id),
             name: action.tool_name.clone(),
@@ -266,6 +185,7 @@ pub async fn handle_reaction(
             ws,
             event: &synthetic_event,
             thread_ts,
+            db,
         };
         let result = crate::tools::execute_tool(&tool_call, &ctx).await;
 
@@ -288,12 +208,11 @@ pub async fn handle_reaction(
         return Ok(true);
     }
 
-    // Reject reactions
     if matches!(reaction, "x" | "thumbsdown" | "-1" | "no_entry_sign") {
         action.state = ApprovalState::Rejected;
         action.resolved_at = Some(chrono::Local::now().to_rfc3339());
         action.resolution_note = Some(format!("Rejected by {} via reaction", event.user));
-        save_pending(ws.path(), &action).await?;
+        save_pending(db, &action).await?;
 
         let thread_ts = action
             .thread_ts
@@ -318,19 +237,22 @@ pub async fn handle_reaction(
         return Ok(true);
     }
 
-    // Unrecognized reaction on an approval DM — ignore
     Ok(false)
 }
 
 /// Scan pending actions for timeouts. Called from the heartbeat loop.
-/// - Timed out + not escalated → DM backup approver, set Escalated
-/// - Timed out + already escalated → set Expired, notify team channel
 pub async fn scan_timeouts(
-    workspace: &Path,
+    db: &Db,
     messenger: &dyn Messenger,
     config: &HeartbeatConfig,
 ) {
-    let actions = load_pending(workspace).await;
+    let actions = match db.load_pending_approvals().await {
+        Ok(a) => a,
+        Err(e) => {
+            warn!(error = %e, "Failed to load pending approvals from DB");
+            return;
+        }
+    };
 
     for mut action in actions {
         if !action.is_timed_out() {
@@ -338,7 +260,6 @@ pub async fn scan_timeouts(
         }
 
         if !action.escalated {
-            // Try escalation to backup approver
             if let Some(ref backup) = action.backup_approver {
                 let backup_id = backup.clone();
                 let escalation_msg = format!(
@@ -358,32 +279,28 @@ pub async fn scan_timeouts(
                         action.escalated = true;
                         action.dm_channel = Some(sent.channel);
                         action.dm_ts = Some(sent.timestamp);
-                        // Reset timeout for the backup approver
                         action.created_at = chrono::Local::now().to_rfc3339();
-                        if let Err(e) = save_pending(workspace, &action).await {
+                        if let Err(e) = save_pending(db, &action).await {
                             warn!(id = %action.id, "Failed to save escalated action: {e}");
                         }
                         info!(id = %action.id, backup = %backup_id, "Escalated approval to backup");
                     }
                     Err(e) => {
                         warn!(id = %action.id, "Failed to DM backup approver: {e}");
-                        // Fall through to expire
-                        expire_action(workspace, messenger, config, &mut action).await;
+                        expire_action(db, messenger, config, &mut action).await;
                     }
                 }
             } else {
-                // No backup configured → expire immediately
-                expire_action(workspace, messenger, config, &mut action).await;
+                expire_action(db, messenger, config, &mut action).await;
             }
         } else {
-            // Already escalated and timed out again → expire
-            expire_action(workspace, messenger, config, &mut action).await;
+            expire_action(db, messenger, config, &mut action).await;
         }
     }
 }
 
 async fn expire_action(
-    workspace: &Path,
+    db: &Db,
     messenger: &dyn Messenger,
     config: &HeartbeatConfig,
     action: &mut PendingAction,
@@ -391,11 +308,10 @@ async fn expire_action(
     action.state = ApprovalState::Expired;
     action.resolved_at = Some(chrono::Local::now().to_rfc3339());
     action.resolution_note = Some("Expired — no response from approver(s)".to_string());
-    if let Err(e) = save_pending(workspace, action).await {
+    if let Err(e) = save_pending(db, action).await {
         warn!(id = %action.id, "Failed to save expired action: {e}");
     }
 
-    // Notify team channel if configured
     let notify_msg = format!(
         "Approval expired for `{}` (requested by <@{}>). No approver responded.",
         action.tool_name, action.requester,
@@ -407,7 +323,6 @@ async fn expire_action(
         }
     }
 
-    // Also notify the original thread
     let thread_ts = action.thread_ts.as_deref().unwrap_or(&action.trigger_ts);
     let _ = messenger
         .post_message(
