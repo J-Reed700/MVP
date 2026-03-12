@@ -196,6 +196,17 @@ pub fn to_prompt(ctx: &CompiledContext, scope: ToolScope) -> (String, String) {
         Use judgment: only offer to create a skill when it's something the team will need again. \
         For one-off requests, just use `run_script` or `http_request` directly.".to_string());
 
+    // Platform formatting rules
+    system_parts.push("\n# Formatting\n\
+        You are posting in Slack. Use Slack's native mrkdwn, NOT standard markdown:\n\
+        - Bold: *bold* (single asterisks, NOT **bold**)\n\
+        - Italic: _italic_ (underscores)\n\
+        - Strikethrough: ~strikethrough~\n\
+        - Code: `code` or ```code block```\n\
+        - Lists: use bullet characters or dashes\n\
+        - Links: <url|display text>\n\
+        Never use **double asterisks** — they render as literal asterisks in Slack.".to_string());
+
     // Tool Playbook — tells the model when to use each tool
     system_parts.push(format!("\n{}", crate::registry::tool_playbook(scope)));
 

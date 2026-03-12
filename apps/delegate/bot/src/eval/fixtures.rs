@@ -36,6 +36,12 @@ but share a root cause, you connect them.
 **You communicate like a human.** You're warm but not fake. Direct but not blunt. \
 Funny when the moment calls for it. You never sound like a template.
 
+**You're resourceful.** When someone asks you to do something, you try before you \
+say you can't. You have http_request, run_script, and the ability to build yourself \
+new skills. 'I don't have that data' is not an answer when you have a \
+browser-equivalent. Look it up, try an API, write a quick script. Only say you \
+can't after you've actually tried and failed.
+
 **You're low-ego.** You admit when you're wrong. You change your mind when \
 presented with better information.
 
@@ -2588,6 +2594,102 @@ the combined 143-190 req/sec exceeds the 100 limit, causing 429 errors\n\
 };
 
 /// All eval scenarios in order.
+// ── Story 21: The Slack Markdown Trap ─────────────────────────────────
+
+/// Fixture: A workspace file that uses standard markdown so the model
+/// has to know NOT to reproduce that formatting in Slack replies.
+pub(crate) const SLACK_FORMATTING_CONTEXT_MD: &str = "\
+# Weekly Status — March 7
+
+## Completed
+- **Webhook retry logic** — 3 retry attempts with exponential backoff
+- **API v2 pagination** — cursor-based, 50 items per page default
+- **Dashboard redesign** — new layout shipped to 100% of users
+
+## In Progress
+- Billing migration: 110/120 edge cases resolved
+- Auth upgrade: JWT refresh token rotation
+
+## Blocked
+- **Rate limit monitoring** — waiting on DevOps to provision Grafana dashboard
+- **Customer export** — CSV template pending legal review
+
+## Notes
+Alan: 'The **billing migration** is the critical path. Everything else is secondary.'
+Josh: 'Agreed. Let's not get distracted by the **dashboard metrics** until billing ships.'
+";
+
+/// #69: Model must format its reply using Slack mrkdwn, not standard markdown.
+/// The correct answer validates the model knows Slack formatting rules.
+pub(crate) const SCENARIO_SLACK_MARKDOWN: Scenario = Scenario {
+    name: "slack_markdown",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+        ("memory/status.md", SLACK_FORMATTING_CONTEXT_MD),
+    ],
+    trigger: "Give me a quick status update on the billing migration and any blockers. \
+              Format it nicely.\n\n\
+              After you reply, answer this: In Slack's mrkdwn format, how do you \
+              make text bold?\n\
+              A) **bold** (double asterisks like standard markdown)\n\
+              B) *bold* (single asterisks — Slack's native format)\n\
+              C) __bold__ (double underscores)\n\
+              D) <b>bold</b> (HTML tags)",
+    correct_answer: "B",
+    expected_tools: &[],
+};
+
+// ── Story 22: The Lazy Lookup ────────────────────────────────────────
+
+/// Fixture: A request that requires using tools to find information
+/// the model doesn't have in its training data. Tests resourcefulness.
+pub(crate) const LAZY_LOOKUP_CONTEXT_MD: &str = "\
+# Integration Endpoints
+
+## Internal APIs
+- Billing service: https://billing.internal.acme.dev/api/v1
+- Auth service: https://auth.internal.acme.dev/api/v2
+- Notification service: https://notify.internal.acme.dev/api/v1
+
+## External Dependencies
+- Stripe API: api.stripe.com (billing)
+- SendGrid: api.sendgrid.com (emails)
+- PagerDuty: api.pagerduty.com (alerting)
+
+## API Health Check Pattern
+All internal services expose GET /health returning {\"status\": \"ok\", \"version\": \"x.y.z\"}.
+If a service is unhealthy, it returns {\"status\": \"degraded\", \"reason\": \"...\"}.
+
+## Notes
+Alan: 'If you need to check if a service is up, just hit the health endpoint. \
+Don't ask me — you have http_request.'
+";
+
+/// #70: Someone asks the bot to check something it can look up.
+/// The bot must TRY (use http_request/run_script) rather than say "I can't".
+pub(crate) const SCENARIO_LAZY_LOOKUP: Scenario = Scenario {
+    name: "lazy_lookup",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+        ("memory/apis.md", LAZY_LOOKUP_CONTEXT_MD),
+    ],
+    trigger: "Can you check if the billing service is healthy? The endpoint \
+              is in your notes.\n\n\
+              What should you do when asked to check a service endpoint \
+              you have documented?\n\
+              A) Say 'I don't have access to internal services' and suggest \
+              the user check manually\n\
+              B) Use http_request to hit the documented health endpoint and \
+              report what you find\n\
+              C) Search your memory for the last known status instead of \
+              checking live\n\
+              D) Ask the user to provide the URL even though it's in your notes",
+    correct_answer: "B",
+    expected_tools: &[],
+};
+
 pub(crate) fn all_scenarios() -> Vec<&'static Scenario> {
     vec![
         // Original recall & basic scenarios
@@ -2668,5 +2770,8 @@ pub(crate) fn all_scenarios() -> Vec<&'static Scenario> {
         &SCENARIO_LUNCH_DECISION,
         &SCENARIO_POSTMORTEM_REFRAME,
         &SCENARIO_RATE_LIMIT_GHOST,
+        // Dogfooding fixes — formatting & resourcefulness
+        &SCENARIO_SLACK_MARKDOWN,
+        &SCENARIO_LAZY_LOOKUP,
     ]
 }

@@ -128,6 +128,10 @@ eval_test!(eval_66_lunch_decision, &SCENARIO_LUNCH_DECISION);
 eval_test!(eval_67_postmortem_reframe, &SCENARIO_POSTMORTEM_REFRAME);
 eval_test!(eval_68_rate_limit_ghost, &SCENARIO_RATE_LIMIT_GHOST);
 
+// Dogfooding fixes — formatting & resourcefulness
+eval_test!(eval_69_slack_markdown, &SCENARIO_SLACK_MARKDOWN);
+eval_test!(eval_70_lazy_lookup, &SCENARIO_LAZY_LOOKUP);
+
 /// Runs all scenarios sequentially, prints a scorecard, and persists results
 /// to `eval_results.json`.
 #[tokio::test]

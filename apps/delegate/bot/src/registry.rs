@@ -373,6 +373,8 @@ pub fn tool_playbook(scope: ToolScope) -> String {
     }
 
     lines.push(String::new());
+    lines.push("**When someone asks a direct question, ALWAYS reply with text.** A reaction alone is never a sufficient response to a question. React + reply, or just reply — but never react-only when someone is asking you something.".to_string());
+    lines.push(String::new());
     lines.push("Only say things you actually know. Never fabricate people, projects, or facts. If you don't have context, say so.".to_string());
 
     // Few-shot examples — models follow examples better than rules
