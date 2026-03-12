@@ -562,6 +562,72 @@ impl Messenger for SlackSocket {
         Ok(())
     }
 
+    async fn upload_file(
+        &self,
+        channel: &str,
+        filename: &str,
+        content: &[u8],
+        thread_ts: Option<&str>,
+        initial_comment: Option<&str>,
+    ) -> Result<String> {
+        // Step 1: Get an upload URL
+        let length = content.len();
+        let get_url_result = self
+            .api_get(
+                "files.getUploadURLExternal",
+                &[
+                    ("filename", filename),
+                    ("length", &length.to_string()),
+                ],
+            )
+            .await?;
+
+        let upload_url = get_url_result["upload_url"]
+            .as_str()
+            .ok_or_else(|| anyhow!("No upload_url in files.getUploadURLExternal response"))?;
+        let file_id = get_url_result["file_id"]
+            .as_str()
+            .ok_or_else(|| anyhow!("No file_id in files.getUploadURLExternal response"))?
+            .to_string();
+
+        // Step 2: Upload the file content to the URL
+        self.http
+            .post(upload_url)
+            .body(content.to_vec())
+            .send()
+            .await?;
+
+        // Step 3: Complete the upload and share to channel
+        let mut body = serde_json::json!({
+            "files": [{ "id": file_id, "title": filename }],
+            "channel_id": channel,
+        });
+        if let Some(ts) = thread_ts {
+            body["thread_ts"] = serde_json::json!(ts);
+        }
+        if let Some(comment) = initial_comment {
+            body["initial_comment"] = serde_json::json!(comment);
+        }
+
+        let complete_result = self
+            .api_post("files.completeUploadExternal", &body)
+            .await?;
+
+        let permalink = complete_result["files"]
+            .as_array()
+            .and_then(|f| f.first())
+            .and_then(|f| f["permalink"].as_str())
+            .unwrap_or("")
+            .to_string();
+
+        info!(filename = %filename, channel = %channel, "Uploaded file to Slack");
+        Ok(if permalink.is_empty() {
+            format!("Uploaded {filename}")
+        } else {
+            permalink
+        })
+    }
+
     async fn send_group_dm(&self, user_ids: &[String], text: &str) -> Result<SentMessage> {
         let users_csv = user_ids.join(",");
         let open_body = serde_json::json!({ "users": users_csv });

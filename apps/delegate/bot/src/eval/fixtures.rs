@@ -36,6 +36,12 @@ but share a root cause, you connect them.
 **You communicate like a human.** You're warm but not fake. Direct but not blunt. \
 Funny when the moment calls for it. You never sound like a template.
 
+**You're resourceful.** When someone asks you to do something, you try before you \
+say you can't. You have http_request, run_script, and the ability to build yourself \
+new skills. 'I don't have that data' is not an answer when you have a \
+browser-equivalent. Look it up, try an API, write a quick script. Only say you \
+can't after you've actually tried and failed.
+
 **You're low-ego.** You admit when you're wrong. You change your mind when \
 presented with better information.
 
@@ -1156,7 +1162,7 @@ pub(crate) const SCENARIO_PROVIDE_UNREQUESTED_CONTEXT: Scenario = Scenario {
         ("memory/projects.md", RICH_PROJECT_STATE_MD),
     ],
     trigger: "Sarah's auth PR is ready, Alan should review it today",
-    correct_answer: "webhook",
+    correct_answer: "alan",
     expected_tools: &["recall_memory"],
 };
 
@@ -2588,6 +2594,193 @@ the combined 143-190 req/sec exceeds the 100 limit, causing 429 errors\n\
 };
 
 /// All eval scenarios in order.
+// ── Story 21: The Slack Markdown Trap ─────────────────────────────────
+
+/// Fixture: A workspace file that uses standard markdown so the model
+/// has to know NOT to reproduce that formatting in Slack replies.
+pub(crate) const SLACK_FORMATTING_CONTEXT_MD: &str = "\
+# Weekly Status — March 7
+
+## Completed
+- **Webhook retry logic** — 3 retry attempts with exponential backoff
+- **API v2 pagination** — cursor-based, 50 items per page default
+- **Dashboard redesign** — new layout shipped to 100% of users
+
+## In Progress
+- Billing migration: 110/120 edge cases resolved
+- Auth upgrade: JWT refresh token rotation
+
+## Blocked
+- **Rate limit monitoring** — waiting on DevOps to provision Grafana dashboard
+- **Customer export** — CSV template pending legal review
+
+## Notes
+Alan: 'The **billing migration** is the critical path. Everything else is secondary.'
+Josh: 'Agreed. Let's not get distracted by the **dashboard metrics** until billing ships.'
+";
+
+/// #69: Model must format its reply using Slack mrkdwn, not standard markdown.
+/// The correct answer validates the model knows Slack formatting rules.
+pub(crate) const SCENARIO_SLACK_MARKDOWN: Scenario = Scenario {
+    name: "slack_markdown",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+        ("memory/status.md", SLACK_FORMATTING_CONTEXT_MD),
+    ],
+    trigger: "Give me a quick status update on the billing migration and any blockers. \
+              Format it nicely.\n\n\
+              After you reply, answer this: In Slack's mrkdwn format, how do you \
+              make text bold?\n\
+              A) **bold** (double asterisks like standard markdown)\n\
+              B) *bold* (single asterisks — Slack's native format)\n\
+              C) __bold__ (double underscores)\n\
+              D) <b>bold</b> (HTML tags)",
+    correct_answer: "B",
+    expected_tools: &[],
+};
+
+// ── Story 22: The Lazy Lookup ────────────────────────────────────────
+
+/// Fixture: A request that requires using tools to find information
+/// the model doesn't have in its training data. Tests resourcefulness.
+pub(crate) const LAZY_LOOKUP_CONTEXT_MD: &str = "\
+# Integration Endpoints
+
+## Internal APIs
+- Billing service: https://billing.internal.acme.dev/api/v1
+- Auth service: https://auth.internal.acme.dev/api/v2
+- Notification service: https://notify.internal.acme.dev/api/v1
+
+## External Dependencies
+- Stripe API: api.stripe.com (billing)
+- SendGrid: api.sendgrid.com (emails)
+- PagerDuty: api.pagerduty.com (alerting)
+
+## API Health Check Pattern
+All internal services expose GET /health returning {\"status\": \"ok\", \"version\": \"x.y.z\"}.
+If a service is unhealthy, it returns {\"status\": \"degraded\", \"reason\": \"...\"}.
+
+## Notes
+Alan: 'If you need to check if a service is up, just hit the health endpoint. \
+Don't ask me — you have http_request.'
+";
+
+/// #70: Someone asks the bot to check something it can look up.
+/// The bot must TRY (use http_request/run_script) rather than say "I can't".
+pub(crate) const SCENARIO_LAZY_LOOKUP: Scenario = Scenario {
+    name: "lazy_lookup",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+        ("memory/apis.md", LAZY_LOOKUP_CONTEXT_MD),
+    ],
+    trigger: "Can you check if the billing service is healthy? The endpoint \
+              is in your notes.\n\n\
+              What should you do when asked to check a service endpoint \
+              you have documented?\n\
+              A) Say 'I don't have access to internal services' and suggest \
+              the user check manually\n\
+              B) Use http_request to hit the documented health endpoint and \
+              report what you find\n\
+              C) Search your memory for the last known status instead of \
+              checking live\n\
+              D) Ask the user to provide the URL even though it's in your notes",
+    correct_answer: "B",
+    expected_tools: &[],
+};
+
+// ── Dogfooding regression: content-quality scenarios ─────────────────────
+
+/// #71: React-only ghosting — user asks a question, bot must TEXT reply,
+/// not just slap a reaction and vanish.
+/// Scenario name contains "must_reply" so scoring enforces visible text.
+pub(crate) const SCENARIO_REACT_GHOSTING_MUST_REPLY: Scenario = Scenario {
+    name: "react_ghosting_must_reply",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+    ],
+    trigger: "Hey @delegate, what's the status on the backend migration? \
+              Are we still on track for Friday?",
+    correct_answer: "",  // any text reply is fine — scoring checks must_reply flag
+    expected_tools: &["reply"],
+};
+
+/// #72: Resourcefulness — user asks the bot to do something it has no
+/// dedicated tool for. It MUST use run_script, not refuse.
+/// Name contains "no_refusal" so scoring detects "I can't" language.
+pub(crate) const SCENARIO_RESOURCEFUL_NO_REFUSAL: Scenario = Scenario {
+    name: "resourceful_no_refusal",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+    ],
+    trigger: "Can you delete all my reminders? I want a clean slate.\n\n\
+              What should you do when asked to perform an action you don't \
+              have a dedicated tool for?\n\
+              A) Tell the user you can't do it because you don't have a \
+              'delete reminders' tool\n\
+              B) Use run_script or another general-purpose tool to accomplish \
+              the task, then confirm what you did\n\
+              C) Suggest the user do it manually\n\
+              D) Ignore the request and change the subject",
+    correct_answer: "B",
+    expected_tools: &[],
+};
+
+/// #73: File generation + upload — user requests a generated file shared in thread.
+/// The bot can use run_script OR write_file, but the file MUST get uploaded.
+/// Name contains "must_upload" so scoring checks messenger log for upload_file.
+pub(crate) const SCENARIO_SCRIPT_UPLOAD_MUST_UPLOAD: Scenario = Scenario {
+    name: "script_upload_must_upload",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+    ],
+    trigger: "Generate a CSV file with 5 rows of sample user data (name, email, \
+              role) and share it here.",
+    correct_answer: "",
+    expected_tools: &[],  // run_script or write_file both valid — must_upload is the real gate
+};
+
+/// #74: Communication discipline — when the bot needs to call tools or do
+/// work, it must acknowledge BEFORE going silent. A react + reply is fine,
+/// but the reply text must exist.
+/// Name contains "must_reply" to enforce visible text output.
+pub(crate) const SCENARIO_STATUS_COMM_MUST_REPLY: Scenario = Scenario {
+    name: "status_comm_must_reply",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+        ("memory/team.md", "# Team\n- Alan: co-founder, backend\n- Josh: co-founder, frontend\n"),
+    ],
+    trigger: "Pull together a summary of everything we've decided this week \
+              and post it to #general.",
+    correct_answer: "",
+    expected_tools: &["recall_memory"],  // must at least try to recall
+};
+
+/// #75: No thinking-tag leaks — the bot is asked a question that triggers
+/// internal reasoning. Any <thinking> tags in the output = instant fail.
+/// ALL scenarios check for thinking tags, but this one is specifically
+/// designed to trigger verbose reasoning.
+pub(crate) const SCENARIO_NO_THINKING_LEAK: Scenario = Scenario {
+    name: "no_thinking_leak_no_tags",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+        ("memory/conflict.md", "# Conflicting Decisions\n\
+            - 2026-03-01: Alan said we should use Postgres for the queue\n\
+            - 2026-03-03: Josh said we should use Redis for the queue\n\
+            - No resolution recorded"),
+    ],
+    trigger: "What did we decide about the job queue? Postgres or Redis? \
+              I need the answer for the architecture doc.",
+    correct_answer: "",
+    expected_tools: &["recall_memory"],
+};
+
 pub(crate) fn all_scenarios() -> Vec<&'static Scenario> {
     vec![
         // Original recall & basic scenarios
@@ -2668,5 +2861,14 @@ pub(crate) fn all_scenarios() -> Vec<&'static Scenario> {
         &SCENARIO_LUNCH_DECISION,
         &SCENARIO_POSTMORTEM_REFRAME,
         &SCENARIO_RATE_LIMIT_GHOST,
+        // Dogfooding fixes — formatting & resourcefulness
+        &SCENARIO_SLACK_MARKDOWN,
+        &SCENARIO_LAZY_LOOKUP,
+        // Dogfooding regression — content-quality checks
+        &SCENARIO_REACT_GHOSTING_MUST_REPLY,
+        &SCENARIO_RESOURCEFUL_NO_REFUSAL,
+        &SCENARIO_SCRIPT_UPLOAD_MUST_UPLOAD,
+        &SCENARIO_STATUS_COMM_MUST_REPLY,
+        &SCENARIO_NO_THINKING_LEAK,
     ]
 }

@@ -443,6 +443,56 @@ impl Db {
             .await?;
         Ok(())
     }
+
+    pub async fn list_reminders(&self, channel: Option<&str>) -> Result<Vec<ReminderRow>> {
+        let rows = if let Some(ch) = channel {
+            sqlx::query_as::<_, ReminderRow>(
+                r#"
+                SELECT id, channel, username, message, fire_at
+                FROM reminders
+                WHERE NOT fired AND channel = $1
+                ORDER BY fire_at
+                "#,
+            )
+            .bind(ch)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, ReminderRow>(
+                r#"
+                SELECT id, channel, username, message, fire_at
+                FROM reminders
+                WHERE NOT fired
+                ORDER BY fire_at
+                "#,
+            )
+            .fetch_all(&self.pool)
+            .await?
+        };
+        Ok(rows)
+    }
+
+    pub async fn delete_reminder(&self, id: Uuid) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM reminders WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn delete_all_reminders(&self, channel: Option<&str>) -> Result<u64> {
+        let result = if let Some(ch) = channel {
+            sqlx::query("DELETE FROM reminders WHERE NOT fired AND channel = $1")
+                .bind(ch)
+                .execute(&self.pool)
+                .await?
+        } else {
+            sqlx::query("DELETE FROM reminders WHERE NOT fired")
+                .execute(&self.pool)
+                .await?
+        };
+        Ok(result.rows_affected())
+    }
 }
 
 // ── Row types for sqlx ─────────────────────────────────────────────────

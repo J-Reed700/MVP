@@ -5,7 +5,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::budget::TokenBudget;
 use crate::context::{self, TaskType};
 use crate::dynamic_registry::{self, DynamicRegistry};
 use crate::event::DelegateEvent;
@@ -58,6 +57,8 @@ pub(crate) struct EvalResult {
     pub tools_called: Vec<String>,
     pub tokens_used: u64,
     pub duration_ms: u64,
+    /// All outbound calls recorded by MockMessenger (post, react, upload, etc.)
+    pub messenger_log: Vec<String>,
 }
 
 // ── Runner ───────────────────────────────────────────────────────────────
@@ -144,15 +145,13 @@ pub(crate) async fn run_scenario(scenario: &Scenario) -> Result<EvalResult> {
         })
         .await?;
 
-    let budget = TokenBudget::new(100_000);
-    budget.record(response.input_tokens + response.output_tokens).await;
-
     // Run tool loop manually to track which tools are called
     let ctx = ToolContext {
         messenger: &messenger,
         ws: &ws,
         event: &event,
         thread_ts: "1000000000.000000",
+        db: None,
     };
 
     let mut conversation: Vec<Value> = vec![serde_json::json!({"role": "user", "content": prompt})];
@@ -181,6 +180,10 @@ pub(crate) async fn run_scenario(scenario: &Scenario) -> Result<EvalResult> {
             if registry.is_information_tool(&call.name).await {
                 has_info_tool = true;
             }
+            // react alone should never end the loop — mirror main.rs fix
+            if call.name == "react" {
+                has_info_tool = true;
+            }
             // Dispatch: skill-defined tools first, then static tools
             let result = if let Some(skill_tool) = registry.get_skill_tool(&call.name).await {
                 dynamic_registry::execute_skill_tool(&skill_tool, &call.arguments, ws.path(), Some(&cred_store)).await
@@ -202,10 +205,6 @@ pub(crate) async fn run_scenario(scenario: &Scenario) -> Result<EvalResult> {
         }
         prev_had_info = has_info_tool;
 
-        if !budget.is_available().await {
-            break;
-        }
-
         resp = client
             .chat(ChatOptions {
                 system: system.clone(),
@@ -218,7 +217,6 @@ pub(crate) async fn run_scenario(scenario: &Scenario) -> Result<EvalResult> {
             .await?;
 
         total_tokens += resp.input_tokens + resp.output_tokens;
-        budget.record(resp.input_tokens + resp.output_tokens).await;
         turn += 1;
     }
 
@@ -247,5 +245,6 @@ pub(crate) async fn run_scenario(scenario: &Scenario) -> Result<EvalResult> {
         tools_called,
         tokens_used: total_tokens,
         duration_ms: start.elapsed().as_millis() as u64,
+        messenger_log: messenger.get_log(),
     })
 }

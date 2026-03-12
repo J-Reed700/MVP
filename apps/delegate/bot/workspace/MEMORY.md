@@ -9,3 +9,5 @@ Topics stored in `memory/`. Updated as conversations happen.
 - [delegate-architecture](memory/delegate-architecture.md) — Delegate architecture: filesystem-as-memory, heartbeat/cron, webhook triage, context assembly
 - [bot-capabilities](memory/bot-capabilities.md) — Delegate can now read its own source code and spec
 - [dev-42-onboarding](memory/dev-42-onboarding.md) — DEV-42 User Onboarding Redesign — high priority epic, customer-critical, design review March 11
+- [slack-formatting](memory/slack-formatting.md) — Slack uses single asterisks for bold, not double — platform-specific markdown
+- [communication-style](memory/communication-style.md) — Communication style for #random — lowercase, informal, programmer vibe
