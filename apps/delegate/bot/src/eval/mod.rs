@@ -132,6 +132,13 @@ eval_test!(eval_68_rate_limit_ghost, &SCENARIO_RATE_LIMIT_GHOST);
 eval_test!(eval_69_slack_markdown, &SCENARIO_SLACK_MARKDOWN);
 eval_test!(eval_70_lazy_lookup, &SCENARIO_LAZY_LOOKUP);
 
+// Dogfooding regression — content-quality checks
+eval_test!(eval_71_react_ghosting, &SCENARIO_REACT_GHOSTING_MUST_REPLY);
+eval_test!(eval_72_resourcefulness, &SCENARIO_RESOURCEFUL_NO_REFUSAL);
+eval_test!(eval_73_script_upload, &SCENARIO_SCRIPT_UPLOAD_MUST_UPLOAD);
+eval_test!(eval_74_status_communication, &SCENARIO_STATUS_COMM_MUST_REPLY);
+eval_test!(eval_75_no_thinking_leak, &SCENARIO_NO_THINKING_LEAK);
+
 /// Runs all scenarios sequentially, prints a scorecard, and persists results
 /// to `eval_results.json`.
 #[tokio::test]

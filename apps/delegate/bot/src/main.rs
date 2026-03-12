@@ -683,6 +683,11 @@ async fn run_event_tool_loop(
             if dynamic_registry.is_information_tool(&call.name).await {
                 needs_followup = true;
             }
+            // react alone should never end the loop — give the LLM
+            // a chance to also send a text reply
+            if call.name == "react" {
+                needs_followup = true;
+            }
             if tier == ActionTier::AutonomousWithNotice && !is_reply_tool(&call.name) && call.name != "post" {
                 silent_actions.push(summarize_action(call, &result));
             }

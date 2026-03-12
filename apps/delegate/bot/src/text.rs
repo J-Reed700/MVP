@@ -16,3 +16,22 @@ pub const STOP_WORDS: &[&str] = &[
 pub fn is_stop_word(word: &str) -> bool {
     STOP_WORDS.binary_search(&word).is_ok()
 }
+
+/// Strip model thinking/reasoning tags that shouldn't appear in user-facing text.
+/// Handles <observation>, <thinking>, <reasoning>, <reflection>, etc.
+/// Also handles ZhiPu's <|observation|> pipe-delimited format.
+pub fn strip_model_tags(text: &str) -> String {
+    // Strip paired tags: <tag>...content...</tag> for each known tag name
+    let tags = ["observation", "thinking", "reasoning", "reflection", "inner_monologue", "thought", "plan", "analysis"];
+    let mut result = text.to_string();
+    for tag in &tags {
+        let pattern = format!(r"(?s)<\|?{}\|?>[^<]*</?\|?{}\|?>", tag, tag);
+        if let Ok(re) = regex::Regex::new(&pattern) {
+            result = re.replace_all(&result, "").to_string();
+        }
+    }
+    // Strip any remaining standalone opening/closing tags
+    let re2 = regex::Regex::new(r"</?(?:\|)?(?:observation|thinking|reasoning|reflection|inner_monologue|thought|plan|analysis)(?:\|)?>").unwrap();
+    result = re2.replace_all(&result, "").to_string();
+    result.trim().to_string()
+}

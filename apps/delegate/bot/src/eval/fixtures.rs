@@ -2690,6 +2690,97 @@ pub(crate) const SCENARIO_LAZY_LOOKUP: Scenario = Scenario {
     expected_tools: &[],
 };
 
+// ── Dogfooding regression: content-quality scenarios ─────────────────────
+
+/// #71: React-only ghosting — user asks a question, bot must TEXT reply,
+/// not just slap a reaction and vanish.
+/// Scenario name contains "must_reply" so scoring enforces visible text.
+pub(crate) const SCENARIO_REACT_GHOSTING_MUST_REPLY: Scenario = Scenario {
+    name: "react_ghosting_must_reply",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+    ],
+    trigger: "Hey @delegate, what's the status on the backend migration? \
+              Are we still on track for Friday?",
+    correct_answer: "",  // any text reply is fine — scoring checks must_reply flag
+    expected_tools: &["reply"],
+};
+
+/// #72: Resourcefulness — user asks the bot to do something it has no
+/// dedicated tool for. It MUST use run_script, not refuse.
+/// Name contains "no_refusal" so scoring detects "I can't" language.
+pub(crate) const SCENARIO_RESOURCEFUL_NO_REFUSAL: Scenario = Scenario {
+    name: "resourceful_no_refusal",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+    ],
+    trigger: "Can you delete all my reminders? I want a clean slate.\n\n\
+              What should you do when asked to perform an action you don't \
+              have a dedicated tool for?\n\
+              A) Tell the user you can't do it because you don't have a \
+              'delete reminders' tool\n\
+              B) Use run_script or another general-purpose tool to accomplish \
+              the task, then confirm what you did\n\
+              C) Suggest the user do it manually\n\
+              D) Ignore the request and change the subject",
+    correct_answer: "B",
+    expected_tools: &[],
+};
+
+/// #73: File generation + upload — user requests a generated file shared in thread.
+/// The bot can use run_script OR write_file, but the file MUST get uploaded.
+/// Name contains "must_upload" so scoring checks messenger log for upload_file.
+pub(crate) const SCENARIO_SCRIPT_UPLOAD_MUST_UPLOAD: Scenario = Scenario {
+    name: "script_upload_must_upload",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+    ],
+    trigger: "Generate a CSV file with 5 rows of sample user data (name, email, \
+              role) and share it here.",
+    correct_answer: "",
+    expected_tools: &[],  // run_script or write_file both valid — must_upload is the real gate
+};
+
+/// #74: Communication discipline — when the bot needs to call tools or do
+/// work, it must acknowledge BEFORE going silent. A react + reply is fine,
+/// but the reply text must exist.
+/// Name contains "must_reply" to enforce visible text output.
+pub(crate) const SCENARIO_STATUS_COMM_MUST_REPLY: Scenario = Scenario {
+    name: "status_comm_must_reply",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+        ("memory/team.md", "# Team\n- Alan: co-founder, backend\n- Josh: co-founder, frontend\n"),
+    ],
+    trigger: "Pull together a summary of everything we've decided this week \
+              and post it to #general.",
+    correct_answer: "",
+    expected_tools: &["recall_memory"],  // must at least try to recall
+};
+
+/// #75: No thinking-tag leaks — the bot is asked a question that triggers
+/// internal reasoning. Any <thinking> tags in the output = instant fail.
+/// ALL scenarios check for thinking tags, but this one is specifically
+/// designed to trigger verbose reasoning.
+pub(crate) const SCENARIO_NO_THINKING_LEAK: Scenario = Scenario {
+    name: "no_thinking_leak_no_tags",
+    workspace_files: &[
+        ("IDENTITY.md", IDENTITY_MD),
+        ("INTENTS.md", INTENTS_MD),
+        ("memory/conflict.md", "# Conflicting Decisions\n\
+            - 2026-03-01: Alan said we should use Postgres for the queue\n\
+            - 2026-03-03: Josh said we should use Redis for the queue\n\
+            - No resolution recorded"),
+    ],
+    trigger: "What did we decide about the job queue? Postgres or Redis? \
+              I need the answer for the architecture doc.",
+    correct_answer: "",
+    expected_tools: &["recall_memory"],
+};
+
 pub(crate) fn all_scenarios() -> Vec<&'static Scenario> {
     vec![
         // Original recall & basic scenarios
@@ -2773,5 +2864,11 @@ pub(crate) fn all_scenarios() -> Vec<&'static Scenario> {
         // Dogfooding fixes — formatting & resourcefulness
         &SCENARIO_SLACK_MARKDOWN,
         &SCENARIO_LAZY_LOOKUP,
+        // Dogfooding regression — content-quality checks
+        &SCENARIO_REACT_GHOSTING_MUST_REPLY,
+        &SCENARIO_RESOURCEFUL_NO_REFUSAL,
+        &SCENARIO_SCRIPT_UPLOAD_MUST_UPLOAD,
+        &SCENARIO_STATUS_COMM_MUST_REPLY,
+        &SCENARIO_NO_THINKING_LEAK,
     ]
 }

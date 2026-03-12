@@ -57,6 +57,8 @@ pub(crate) struct EvalResult {
     pub tools_called: Vec<String>,
     pub tokens_used: u64,
     pub duration_ms: u64,
+    /// All outbound calls recorded by MockMessenger (post, react, upload, etc.)
+    pub messenger_log: Vec<String>,
 }
 
 // ── Runner ───────────────────────────────────────────────────────────────
@@ -178,6 +180,10 @@ pub(crate) async fn run_scenario(scenario: &Scenario) -> Result<EvalResult> {
             if registry.is_information_tool(&call.name).await {
                 has_info_tool = true;
             }
+            // react alone should never end the loop — mirror main.rs fix
+            if call.name == "react" {
+                has_info_tool = true;
+            }
             // Dispatch: skill-defined tools first, then static tools
             let result = if let Some(skill_tool) = registry.get_skill_tool(&call.name).await {
                 dynamic_registry::execute_skill_tool(&skill_tool, &call.arguments, ws.path(), Some(&cred_store)).await
@@ -239,5 +245,6 @@ pub(crate) async fn run_scenario(scenario: &Scenario) -> Result<EvalResult> {
         tools_called,
         tokens_used: total_tokens,
         duration_ms: start.elapsed().as_millis() as u64,
+        messenger_log: messenger.get_log(),
     })
 }

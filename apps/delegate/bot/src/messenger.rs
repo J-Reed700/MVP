@@ -146,6 +146,17 @@ pub trait Messenger: Send + Sync {
 
     /// Open a group DM with multiple users and send a message.
     async fn send_group_dm(&self, user_ids: &[String], text: &str) -> Result<SentMessage>;
+
+    /// Upload a file to a channel (optionally in a thread).
+    /// Returns the permalink or a confirmation string.
+    async fn upload_file(
+        &self,
+        channel: &str,
+        filename: &str,
+        content: &[u8],
+        thread_ts: Option<&str>,
+        initial_comment: Option<&str>,
+    ) -> Result<String>;
 }
 
 // ── Transport trait ───────────────────────────────────────────────────

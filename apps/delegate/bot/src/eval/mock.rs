@@ -22,6 +22,11 @@ impl MockMessenger {
     fn push(&self, entry: String) {
         self.log.lock().unwrap().push(entry);
     }
+
+    /// Returns a snapshot of all recorded calls for scoring inspection.
+    pub fn get_log(&self) -> Vec<String> {
+        self.log.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
@@ -105,5 +110,17 @@ impl Messenger for MockMessenger {
             channel: "G_MOCK".to_string(),
             timestamp: "1000000000.000003".to_string(),
         })
+    }
+
+    async fn upload_file(
+        &self,
+        channel: &str,
+        filename: &str,
+        _content: &[u8],
+        thread_ts: Option<&str>,
+        initial_comment: Option<&str>,
+    ) -> Result<String> {
+        self.push(format!("upload_file({channel}, {filename}, {thread_ts:?}, {initial_comment:?})"));
+        Ok(format!("https://mock.slack.com/files/{filename}"))
     }
 }

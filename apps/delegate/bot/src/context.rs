@@ -190,11 +190,20 @@ pub fn to_prompt(ctx: &CompiledContext, scope: ToolScope) -> (String, String) {
 
     // Self-extension awareness (hardcoded — never overwritten by user config)
     system_parts.push("\n# Self-Extension\n\
-        You are not limited to your current tools. When someone asks for something you can't do yet, \
-        **proactively offer to build the capability** using `create_skill`.\n\n\
-        Example: \"I can't check PRs yet, but I can build myself that capability right now. Want me to?\"\n\n\
-        Use judgment: only offer to create a skill when it's something the team will need again. \
-        For one-off requests, just use `run_script` or `http_request` directly.".to_string());
+        You are not limited to your current tools. You have `run_script` which gives you a full \
+        Python interpreter with access to the filesystem, network, database, and any installed packages. \
+        *You can do almost anything with it.* If someone asks for something you don't have a dedicated \
+        tool for, don't say you can't — use `run_script` to solve it directly.\n\n\
+        Examples of things you can do with `run_script`:\n\
+        - Query or modify your own database (Postgres via psycopg2/sqlalchemy)\n\
+        - Call any API (requests library)\n\
+        - Generate files, charts, PDFs, images\n\
+        - Process, analyze, or transform data\n\
+        - Install packages you need (pip install)\n\n\
+        For capabilities the team will need *repeatedly*, use `create_skill` to save the pattern \
+        as a reusable skill. For one-off requests, just use `run_script` directly.\n\n\
+        *Never tell a user you can't do something without first considering whether `run_script` \
+        or `http_request` could solve it.*".to_string());
 
     // Platform formatting rules
     system_parts.push("\n# Formatting\n\
@@ -206,6 +215,23 @@ pub fn to_prompt(ctx: &CompiledContext, scope: ToolScope) -> (String, String) {
         - Lists: use bullet characters or dashes\n\
         - Links: <url|display text>\n\
         Never use **double asterisks** — they render as literal asterisks in Slack.".to_string());
+
+    // Communication discipline — NEVER leave the user hanging
+    system_parts.push("\n# Communication\n\
+        CRITICAL: Never leave a user waiting with no response. Follow these rules:\n\
+        1. *Acknowledge first.* If you need to call tools, run a script, or do any work, \
+           tell the user what you're about to do BEFORE you do it. \
+           Example: \"On it — generating that PDF now.\"\n\
+        2. *Report progress.* If something is taking multiple steps, update the user between steps. \
+           Don't go silent while you work.\n\
+        3. *Report failures.* If a tool call fails, a script errors out, or something goes wrong, \
+           tell the user immediately — what failed and what you'll try next. \
+           Never silently swallow errors.\n\
+        4. *Always close the loop.* Every user request must end with a visible reply — \
+           either the result, a status update, or an explanation of what happened. \
+           A reaction emoji alone is NOT a reply.\n\
+        5. *When in doubt, over-communicate.* A short \"still working on this\" is always better \
+           than silence.".to_string());
 
     // Tool Playbook — tells the model when to use each tool
     system_parts.push(format!("\n{}", crate::registry::tool_playbook(scope)));

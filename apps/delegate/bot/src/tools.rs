@@ -46,6 +46,8 @@ pub async fn execute_tool(call: &ToolCall, ctx: &ToolContext<'_>) -> String {
         "log_decision" => handle_log_decision(args, ctx).await,
         "update_intents" => handle_update_intents(args, ctx).await,
         "set_reminder" => handle_set_reminder(args, ctx).await,
+        "list_reminders" => handle_list_reminders(args, ctx).await,
+        "delete_reminder" => handle_delete_reminder(args, ctx).await,
         "create_channel" => handle_create_channel(args, ctx).await,
         "invite_to_channel" => handle_invite_to_channel(args, ctx).await,
         "group_dm" => handle_group_dm(args, ctx).await,
@@ -171,13 +173,17 @@ async fn handle_react(args: &Value, ctx: &ToolContext<'_>) -> String {
 }
 
 async fn handle_reply(args: &Value, ctx: &ToolContext<'_>) -> String {
-    let text = match require_str(args, "text") {
+    let raw_text = match require_str(args, "text") {
         Ok(t) => t,
         Err(e) => return e,
     };
+    let text = text::strip_model_tags(raw_text);
+    if text.is_empty() {
+        return "Reply suppressed (contained only model thinking tags)".to_string();
+    }
     match ctx
         .messenger
-        .post_message(ctx.event.channel.as_str(), text, Some(ctx.thread_ts))
+        .post_message(ctx.event.channel.as_str(), &text, Some(ctx.thread_ts))
         .await
     {
         Ok(_) => "Reply posted".to_string(),
@@ -190,10 +196,14 @@ async fn handle_post(args: &Value, ctx: &ToolContext<'_>) -> String {
         Ok(c) => c,
         Err(e) => return e,
     };
-    let text = match require_str(args, "text") {
+    let raw_text = match require_str(args, "text") {
         Ok(t) => t,
         Err(e) => return e,
     };
+    let text = text::strip_model_tags(raw_text);
+    if text.is_empty() {
+        return "Post suppressed (contained only model thinking tags)".to_string();
+    }
     // Accept either a channel ID (C012345) or a channel name (general).
     // If it doesn't look like an ID, try to resolve the name.
     let channel_id = if channel_input.starts_with('C') || channel_input.starts_with('G') {
@@ -204,7 +214,7 @@ async fn handle_post(args: &Value, ctx: &ToolContext<'_>) -> String {
             None => return format!("Could not resolve channel '{channel_input}'. Use a channel ID (e.g. C012345) or an exact channel name."),
         }
     };
-    match ctx.messenger.post_message(&channel_id, text, None).await {
+    match ctx.messenger.post_message(&channel_id, &text, None).await {
         Ok(_) => format!("Posted to {channel_input}"),
         Err(e) => format!("Failed to post: {e}"),
     }
@@ -257,7 +267,7 @@ async fn handle_run_script(args: &Value, ctx: &ToolContext<'_>) -> String {
     }
 
     let (ext, program, shell_flag) = match language {
-        "python" => ("py", "python3", None),
+        "python" => ("py", if cfg!(windows) { "python" } else { "python3" }, None),
         "shell" => {
             if cfg!(windows) {
                 ("bat", "cmd", Some("/C"))
@@ -292,6 +302,22 @@ async fn handle_run_script(args: &Value, ctx: &ToolContext<'_>) -> String {
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
+    // Ensure a tmp/ directory exists in workspace and expose it as TMPDIR
+    // so scripts don't use /tmp/ which doesn't exist on Windows.
+    let tmp_dir = ctx.ws.path().join("tmp");
+    let _ = std::fs::create_dir_all(&tmp_dir);
+    cmd.env("TMPDIR", &tmp_dir);
+    cmd.env("TEMP", &tmp_dir);
+    cmd.env("TMP", &tmp_dir);
+
+    // Snapshot workspace files before running so we can detect new outputs
+    let mut before_files = std::collections::HashSet::new();
+    if let Ok(mut entries) = tokio::fs::read_dir(ctx.ws.path()).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            before_files.insert(entry.file_name());
+        }
+    }
+
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         cmd.output(),
@@ -315,6 +341,56 @@ async fn handle_run_script(args: &Value, ctx: &ToolContext<'_>) -> String {
             if !stderr.is_empty() {
                 result.push_str(&format!("\nstderr:\n{}", truncate_str(&stderr, 2048)));
             }
+
+            // Auto-upload new shareable files created by the script
+            // Scan both workspace root and tmp/ subdirectory
+            let shareable_exts = ["csv", "json", "md", "txt", "html", "xml", "docx", "xlsx", "pdf", "png", "jpg", "svg"];
+            let scan_dirs = [ctx.ws.path().to_path_buf(), ctx.ws.path().join("tmp")];
+            for scan_dir in &scan_dirs {
+                if let Ok(mut entries) = tokio::fs::read_dir(scan_dir).await {
+                    while let Ok(Some(entry)) = entries.next_entry().await {
+                        let name = entry.file_name();
+                        // Skip known-before files (only for workspace root)
+                        if scan_dir == ctx.ws.path() && before_files.contains(&name) {
+                            continue;
+                        }
+                        let filename = name.to_string_lossy().to_string();
+                        let is_shareable = filename
+                            .rsplit('.')
+                            .next()
+                            .map(|ext| shareable_exts.contains(&ext))
+                            .unwrap_or(false);
+                        if !is_shareable {
+                            continue;
+                        }
+                        let file_path = entry.path();
+                        match tokio::fs::read(&file_path).await {
+                            Ok(content) => {
+                                let channel = ctx.event.channel.as_str();
+                                let thread_ts = Some(ctx.thread_ts);
+                                match ctx
+                                    .messenger
+                                    .upload_file(channel, &filename, &content, thread_ts, None)
+                                    .await
+                                {
+                                    Ok(link) => {
+                                        info!(file = %filename, "Auto-uploaded script output to Slack");
+                                        result.push_str(&format!("\n\nUploaded {filename} to thread ({link})"));
+                                    }
+                                    Err(e) => {
+                                        warn!(file = %filename, error = %e, "Failed to upload script output");
+                                        result.push_str(&format!("\n\nFile {filename} created but upload failed: {e}"));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!(file = %filename, error = %e, "Failed to read script output file");
+                            }
+                        }
+                    }
+                }
+            }
+
             result
         }
         Ok(Err(e)) => format!("Failed to execute script: {e}"),
@@ -436,7 +512,41 @@ async fn handle_write_file(args: &Value, ctx: &ToolContext<'_>) -> String {
     match tokio::fs::write(&full, content).await {
         Ok(_) => {
             info!(path = %path, "Wrote file");
-            format!("Written to {path}")
+
+            // Auto-upload shareable file types to the conversation
+            let filename = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path);
+            let ext = std::path::Path::new(path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            let should_upload = matches!(
+                ext,
+                "csv" | "json" | "md" | "txt" | "html" | "xml" | "docx" | "xlsx" | "pdf"
+            );
+
+            if should_upload {
+                let channel = ctx.event.channel.as_str();
+                let thread_ts = Some(ctx.thread_ts);
+                match ctx
+                    .messenger
+                    .upload_file(channel, filename, content.as_bytes(), thread_ts, None)
+                    .await
+                {
+                    Ok(link) => {
+                        info!(path = %path, "Auto-uploaded file to Slack");
+                        format!("Written to {path} and shared in thread ({link})")
+                    }
+                    Err(e) => {
+                        warn!(path = %path, error = %e, "File written but upload failed");
+                        format!("Written to {path} (upload to Slack failed: {e})")
+                    }
+                }
+            } else {
+                format!("Written to {path}")
+            }
         }
         Err(e) => format!("Failed to write {path}: {e}"),
     }
@@ -752,6 +862,57 @@ async fn handle_set_reminder(args: &Value, ctx: &ToolContext<'_>) -> String {
             format!("Reminder set for {time_str}: {message}")
         }
         Err(e) => format!("Failed to save reminder: {e}"),
+    }
+}
+
+async fn handle_list_reminders(args: &Value, ctx: &ToolContext<'_>) -> String {
+    let Some(db) = ctx.db else {
+        return "Reminder storage unavailable (no database)".to_string();
+    };
+    let channel = args["channel"].as_str();
+    match db.list_reminders(channel).await {
+        Ok(reminders) if reminders.is_empty() => "No active reminders.".to_string(),
+        Ok(reminders) => {
+            let mut out = format!("{} active reminder(s):\n", reminders.len());
+            for r in &reminders {
+                let time_str = r.fire_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M");
+                out.push_str(&format!(
+                    "- [{}] {} (fires at {}, channel: {})\n",
+                    r.id, r.message, time_str, r.channel
+                ));
+            }
+            out
+        }
+        Err(e) => format!("Failed to list reminders: {e}"),
+    }
+}
+
+async fn handle_delete_reminder(args: &Value, ctx: &ToolContext<'_>) -> String {
+    let Some(db) = ctx.db else {
+        return "Reminder storage unavailable (no database)".to_string();
+    };
+
+    // Support "all" to delete all reminders
+    if args["id"].as_str() == Some("all") {
+        let channel = args["channel"].as_str();
+        match db.delete_all_reminders(channel).await {
+            Ok(count) => return format!("Deleted {count} reminder(s)."),
+            Err(e) => return format!("Failed to delete reminders: {e}"),
+        }
+    }
+
+    let id_str = match require_str(args, "id") {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let id = match uuid::Uuid::parse_str(id_str) {
+        Ok(id) => id,
+        Err(_) => return format!("Invalid reminder ID: {id_str}. Use list_reminders to see IDs."),
+    };
+    match db.delete_reminder(id).await {
+        Ok(true) => format!("Deleted reminder {id}."),
+        Ok(false) => format!("No reminder found with ID {id}."),
+        Err(e) => format!("Failed to delete reminder: {e}"),
     }
 }
 
