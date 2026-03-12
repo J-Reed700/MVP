@@ -18,7 +18,7 @@ pub struct ToolContext<'a> {
     pub ws: &'a Workspace,
     pub event: &'a DelegateEvent,
     pub thread_ts: &'a str,
-    pub db: &'a Db,
+    pub db: Option<&'a Db>,
 }
 
 // ── Dispatch ───────────────────────────────────────────────────────────
@@ -742,7 +742,10 @@ async fn handle_set_reminder(args: &Value, ctx: &ToolContext<'_>) -> String {
     let now = chrono::Utc::now();
     let fire_at = now + Duration::minutes(delay_minutes);
 
-    match ctx.db.add_reminder(&channel, ctx.event.user.as_str(), message, fire_at).await {
+    let Some(db) = ctx.db else {
+        return "Reminder storage unavailable (no database)".to_string();
+    };
+    match db.add_reminder(&channel, ctx.event.user.as_str(), message, fire_at).await {
         Ok(_) => {
             let time_str = fire_at.with_timezone(&chrono::Local).format("%H:%M").to_string();
             info!(message = %message, fire_at = %time_str, "Reminder set");
@@ -839,14 +842,16 @@ async fn handle_update_intents(args: &Value, ctx: &ToolContext<'_>) -> String {
     let reason = args["reason"].as_str().unwrap_or("no reason given");
 
     info!(reason = %reason, "Updating INTENTS.md");
-    logger::append_log(
-        ctx.db,
-        "internal",
-        "delegate-bot",
-        &format!("[intents-update] {reason}"),
-    )
-    .await
-    .ok();
+    if let Some(db) = ctx.db {
+        logger::append_log(
+            db,
+            "internal",
+            "delegate-bot",
+            &format!("[intents-update] {reason}"),
+        )
+        .await
+        .ok();
+    }
 
     match tokio::fs::write(ctx.ws.path().join("INTENTS.md"), content).await {
         Ok(_) => format!("INTENTS.md updated. Reason: {reason}"),

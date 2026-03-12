@@ -402,6 +402,41 @@ pub fn tool_playbook(scope: ToolScope) -> String {
          *When someone says \"set up a channel\" or \"make a channel\" — use create_channel, then invite_to_channel.*\n".to_string()
     );
 
+    lines.push(
+        "**Someone shares news that affects people not in the conversation:**\n\
+         > \"Sarah's auth PR is ready, Alan should review it today\"\n\
+         → recall_memory(\"auth PR webhook Alan Sarah\") → check what you know → reply with relevant context the speaker may not have\n\
+         *Even if nobody asked you a question, if you have context that enriches or complicates what was just said, SPEAK UP. A react + save is not enough — reply with the insight.*\n".to_string()
+    );
+
+    lines.push(
+        "**Someone thinks out loud about a scope or direction change:**\n\
+         > \"thinking out loud — should we cut billing export from v1?\"\n\
+         → log_decision(decision: \"Considering cutting billing export from v1\", reasoning: ...) + reply with your perspective\n\
+         *\"Thinking out loud\" and \"let's just\" and \"should we\" are decisions in progress. Log them immediately — they're easy to lose.*\n".to_string()
+    );
+
+    lines.push(
+        "**Someone asks for a summary, digest, or standup:**\n\
+         > \"I missed everything today, give me the 30-second digest\"\n\
+         → recall_memory(\"today's activity\") + read_file(logs) → synthesize into a concise reply\n\
+         *Always check memory and logs before writing summaries. Don't guess from context alone — retrieve first, then synthesize.*\n".to_string()
+    );
+
+    lines.push(
+        "**Someone shares a fact that has downstream implications:**\n\
+         > \"heads up — Alan is going to be out all next week\"\n\
+         → recall_memory(\"Alan blockers deadlines\") → reply flagging what's at risk (reviews, deadlines, handoffs)\n\
+         *When someone shares news, think: who depends on this person? What deadlines are affected? Always recall and connect the dots — then say it out loud.*\n".to_string()
+    );
+
+    lines.push(
+        "**Someone asks you to log, save, or record something:**\n\
+         > \"Stripe is deprecating webhook signature v1 by April 1st. Log this.\"\n\
+         → log_decision(...) + reply confirming what you logged and flagging any implications\n\
+         *After logging or saving, always reply to confirm the action and surface any implications you see. Silent saves leave the human wondering if you did anything.*\n".to_string()
+    );
+
     lines.join("\n")
 }
 

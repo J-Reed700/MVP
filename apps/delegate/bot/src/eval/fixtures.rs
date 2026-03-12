@@ -1162,7 +1162,7 @@ pub(crate) const SCENARIO_PROVIDE_UNREQUESTED_CONTEXT: Scenario = Scenario {
         ("memory/projects.md", RICH_PROJECT_STATE_MD),
     ],
     trigger: "Sarah's auth PR is ready, Alan should review it today",
-    correct_answer: "webhook",
+    correct_answer: "alan",
     expected_tools: &["recall_memory"],
 };
 

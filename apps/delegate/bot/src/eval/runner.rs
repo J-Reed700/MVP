@@ -5,7 +5,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::budget::TokenBudget;
 use crate::context::{self, TaskType};
 use crate::dynamic_registry::{self, DynamicRegistry};
 use crate::event::DelegateEvent;
@@ -144,15 +143,13 @@ pub(crate) async fn run_scenario(scenario: &Scenario) -> Result<EvalResult> {
         })
         .await?;
 
-    let budget = TokenBudget::new(100_000);
-    budget.record(response.input_tokens + response.output_tokens).await;
-
     // Run tool loop manually to track which tools are called
     let ctx = ToolContext {
         messenger: &messenger,
         ws: &ws,
         event: &event,
         thread_ts: "1000000000.000000",
+        db: None,
     };
 
     let mut conversation: Vec<Value> = vec![serde_json::json!({"role": "user", "content": prompt})];
@@ -202,10 +199,6 @@ pub(crate) async fn run_scenario(scenario: &Scenario) -> Result<EvalResult> {
         }
         prev_had_info = has_info_tool;
 
-        if !budget.is_available().await {
-            break;
-        }
-
         resp = client
             .chat(ChatOptions {
                 system: system.clone(),
@@ -218,7 +211,6 @@ pub(crate) async fn run_scenario(scenario: &Scenario) -> Result<EvalResult> {
             .await?;
 
         total_tokens += resp.input_tokens + resp.output_tokens;
-        budget.record(resp.input_tokens + resp.output_tokens).await;
         turn += 1;
     }
 
