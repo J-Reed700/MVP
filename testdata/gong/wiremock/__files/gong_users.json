@@ -1,0 +1,9 @@
+{
+  "users": [
+    { "id": "u001", "firstName": "Alice", "lastName": "Chen", "emailAddress": "alice@acme.io", "title": "Engineering Lead" },
+    { "id": "u002", "firstName": "Bob", "lastName": "Park", "emailAddress": "bob@acme.io", "title": "Product Manager" },
+    { "id": "u003", "firstName": "Carlos", "lastName": "Rivera", "emailAddress": "carlos@acme.io", "title": "Backend Engineer" },
+    { "id": "u004", "firstName": "Diana", "lastName": "Wu", "emailAddress": "diana@acme.io", "title": "Designer" },
+    { "id": "u005", "firstName": "Eve", "lastName": "Zhang", "emailAddress": "eve@acme.io", "title": "Frontend Engineer" }
+  ]
+}

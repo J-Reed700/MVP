@@ -1,0 +1,65 @@
+{
+  // Scenario 2: Audience Framing
+  // Hypothesis: IDENTITY.md + framing instructions produce audience-appropriate writing.
+  // Kill condition: Outputs feel like same text at different verbosity levels.
+
+  "id": "02-audience-framing",
+  "name": "Audience Framing",
+  "hypothesis": "IDENTITY.md + framing instructions produce audience-appropriate writing. Outputs should feel like three different humans wrote them.",
+
+  "trigger": {
+    "type": "scheduled",
+    "content": "Generate a weekly project status update for the billing migration. Cover progress, risks, and next steps."
+  },
+
+  "task": "Write a project status update for the billing migration based on this week's activity.",
+
+  "variants": [
+    {
+      "id": "engineers",
+      "label": "A: For #platform-standup (Engineers)",
+      "description": "Status update framed for the engineering team",
+      "includeIntents": true,
+      "retrievalBias": ["billing migration", "PLAT-350", "PLAT-351", "staging", "API"],
+      "audience": {
+        "name": "#platform-standup",
+        "instructions": "This is for the engineering team in #platform-standup. This team values brevity. Engineers hate fluff and corporate-speak. Lead with technical blockers and what's actually happening. Use ticket numbers. No motivational language. If something is behind, say it's behind."
+      }
+    },
+    {
+      "id": "vp-sales",
+      "label": "B: For VP Sales (Jordan)",
+      "description": "Status update framed for Jordan Rivera (VP Sales)",
+      "includeIntents": true,
+      "retrievalBias": ["billing migration", "enterprise", "March 15", "CloudFirst", "timeline"],
+      "audience": {
+        "name": "Jordan Rivera (VP Sales)",
+        "instructions": "This is for Jordan Rivera, VP Sales. Jordan treats timelines as promises. Lead with risk and timeline confidence — never with implementation details. Jordan doesn't care about technical complexity; Jordan cares about what we can tell customers. Use confident, clear language. If the timeline is at risk, say so directly and explain what it means for customer commitments."
+      }
+    },
+    {
+      "id": "new-hire",
+      "label": "C: For Alex (New Hire)",
+      "description": "Status update framed for Alex Kim who joined 2 weeks ago",
+      "includeIntents": true,
+      "retrievalBias": ["billing migration", "legacy schema", "November incident", "unified schema"],
+      "audience": {
+        "name": "Alex Kim (new hire)",
+        "instructions": "This is for Alex Kim, who joined the team 2 weeks ago. Alex is still learning the codebase and team dynamics. Provide background context that others on the team would assume — explain why things matter, who the key people are, and what the history is. Be warm and helpful. Use this as a chance to onboard Alex on the project's context, not just its status."
+      }
+    }
+  ],
+
+  "evaluation": {
+    "criteria": [
+      "Do outputs feel like three different humans wrote them?",
+      "Does engineer version lead with technical blockers and ticket numbers?",
+      "Does VP version lead with timeline and risk, no implementation details?",
+      "Does new-hire version explain context that the other two assume?",
+      "Does engineer version avoid corporate fluff?",
+      "Does VP version avoid technical jargon?",
+      "Does new-hire version explain the November incident's relevance?"
+    ],
+    "killCondition": "Outputs feel like the same text at different verbosity levels — same structure, same emphasis, just more or less detail."
+  }
+}

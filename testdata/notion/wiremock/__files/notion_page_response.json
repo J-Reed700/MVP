@@ -1,0 +1,55 @@
+{
+  "object": "page",
+  "id": "a1b2c3d4-0002-4000-a002-000000000002",
+  "created_time": "2026-02-10T09:00:00.000Z",
+  "last_edited_time": "2026-03-07T16:30:00.000Z",
+  "parent": { "type": "workspace", "workspace": true },
+  "properties": {
+    "title": {
+      "id": "title",
+      "type": "title",
+      "title": [{ "type": "text", "text": { "content": "PRD: User Onboarding Redesign" } }]
+    },
+    "Status": {
+      "id": "status",
+      "type": "select",
+      "select": { "name": "In Review", "color": "yellow" }
+    },
+    "Owner": {
+      "id": "owner",
+      "type": "people",
+      "people": [{ "name": "Bob Park", "avatar_url": null }]
+    },
+    "Eng Lead": {
+      "id": "eng_lead",
+      "type": "people",
+      "people": [{ "name": "Alice Chen", "avatar_url": null }]
+    },
+    "Designer": {
+      "id": "designer",
+      "type": "people",
+      "people": [{ "name": "Diana Wu", "avatar_url": null }]
+    },
+    "Jira Epic": {
+      "id": "jira",
+      "type": "url",
+      "url": "https://acme.atlassian.net/browse/DEV-42"
+    },
+    "Figma": {
+      "id": "figma",
+      "type": "url",
+      "url": "https://www.figma.com/file/abc123XYZ/Onboarding-Flow-v3"
+    },
+    "GitHub": {
+      "id": "github",
+      "type": "url",
+      "url": "https://github.com/acme/product/issues/235"
+    },
+    "Target Release": {
+      "id": "release",
+      "type": "select",
+      "select": { "name": "v2.2.0" }
+    }
+  },
+  "url": "https://www.notion.so/PRD-User-Onboarding-Redesign-a1b2c3d4"
+}

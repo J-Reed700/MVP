@@ -1,7 +1,7 @@
 {
   "request": {
-    "method": "GET",
-    "urlPath": "/events"
+    "method": "POST",
+    "urlPath": "/v2/calls/extensive"
   },
   "response": {
     "status": 200,

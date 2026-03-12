@@ -1,0 +1,25 @@
+{
+  "name": "Acme Product Team",
+  "projects": [
+    {
+      "id": "90001",
+      "name": "Onboarding Redesign"
+    },
+    {
+      "id": "90002",
+      "name": "Dashboard v2"
+    },
+    {
+      "id": "90003",
+      "name": "Mobile App"
+    },
+    {
+      "id": "90004",
+      "name": "Design System"
+    },
+    {
+      "id": "90005",
+      "name": "API Documentation"
+    }
+  ]
+}

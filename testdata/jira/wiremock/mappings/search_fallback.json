@@ -1,7 +1,7 @@
 {
   "request": {
-    "method": "POST",
-    "urlPath": "/rest/api/3/search"
+    "method": "GET",
+    "urlPathPattern": "/rest/api/3/search.*"
   },
   "response": {
     "status": 200,

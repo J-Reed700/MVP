@@ -1,0 +1,72 @@
+{
+  "id": "10042",
+  "key": "DEV-42",
+  "self": "https://acme.atlassian.net/rest/api/3/issue/10042",
+  "fields": {
+    "summary": "Epic: User Onboarding Redesign",
+    "status": {
+      "name": "In Progress",
+      "statusCategory": { "key": "indeterminate", "name": "In Progress" }
+    },
+    "priority": { "name": "High", "id": "2" },
+    "issuetype": { "name": "Epic", "subtask": false },
+    "assignee": {
+      "accountId": "acc-alice",
+      "displayName": "Alice Chen",
+      "emailAddress": "alice@acme.io"
+    },
+    "reporter": {
+      "accountId": "acc-bob",
+      "displayName": "Bob Park"
+    },
+    "project": { "key": "DEV", "name": "Product Development" },
+    "labels": ["onboarding", "q1-2026", "customer-feedback"],
+    "description": {
+      "type": "doc",
+      "version": 1,
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [{ "type": "text", "text": "Redesign the user onboarding flow based on customer feedback from Gong calls (customers report 40% drop-off at profile setup). PRD in Notion: 'PRD: User Onboarding Redesign'. Figma designs: file abc123XYZ. GitHub tracking: acme/product#235." }]
+        }
+      ]
+    },
+    "created": "2026-02-10T09:00:00.000+0000",
+    "updated": "2026-03-09T16:30:00.000+0000",
+    "comment": {
+      "total": 3,
+      "comments": [
+        {
+          "id": "10200",
+          "author": { "displayName": "Bob Park" },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "PRD is finalized in Notion. Diana's Figma designs (abc123XYZ) are ready for eng review. Design review meeting scheduled for March 11." }] }]
+          },
+          "created": "2026-02-28T10:00:00.000+0000"
+        },
+        {
+          "id": "10201",
+          "author": { "displayName": "Diana Wu" },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "Updated Figma with feedback from Alice's review comments. Simplified the welcome screen per Bob's suggestion. See thread in Figma file abc123XYZ." }] }]
+          },
+          "created": "2026-03-07T14:00:00.000+0000"
+        },
+        {
+          "id": "10202",
+          "author": { "displayName": "Alice Chen" },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "Implementation started — PR #189 on GitHub (acme/product). Depends on ENG-101 auth migration in Linear being done first. Blocked by DEV-34 deep link bug for mobile testing." }] }]
+          },
+          "created": "2026-03-09T11:00:00.000+0000"
+        }
+      ]
+    }
+  }
+}

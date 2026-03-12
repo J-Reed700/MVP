@@ -1,0 +1,13 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPath": "/gmail/v1/users/me/messages"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "bodyFileName": "gmail_messages_response.json"
+  }
+}

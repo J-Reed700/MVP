@@ -1,0 +1,87 @@
+{
+  // Scenario 5: Intent Lifecycle
+  // Hypothesis: The model can maintain INTENTS.md as events unfold.
+  // Kill condition: Updates miss obvious signals or drift from reality.
+
+  "id": "05-intent-lifecycle",
+  "name": "Intent Lifecycle",
+  "hypothesis": "The model can maintain INTENTS.md as events unfold — updating trajectory, adding watch signals, escalating/de-escalating appropriately.",
+
+  "task": "You maintain the team's INTENTS.md file. After each event, decide: should INTENTS.md be updated? If so, provide the complete updated INTENTS.md. If not, explain why no update is needed. Focus on trajectory changes, new watch signals, and urgency shifts.",
+
+  "events": [
+    {
+      "id": 1,
+      "description": "Data model PR merged",
+      "content": "[Jira] PLAT-347 status changed: In Review → Done. PR #347 merged to main by Sarah Chen. 'Unified Billing Data Model' — 847 lines, 3 approvals.",
+      "expectedSignal": "positive — major milestone achieved, foundation for API work is in place"
+    },
+    {
+      "id": 2,
+      "description": "API work starting",
+      "content": "[Slack #billing-migration] Marcus Washington: 'API work starting today. Alex and I have scoped PLAT-350, PLAT-351, and PLAT-352. Targeting create endpoint by Monday, update by Tuesday, cancel/refund by end of next week.'",
+      "expectedSignal": "positive — critical path work is beginning with clear timeline"
+    },
+    {
+      "id": 3,
+      "description": "Enterprise customer timeline inquiry",
+      "content": "[Slack #platform-eng] Jordan Rivera: 'Hey team — CloudFirst is asking about our billing capabilities for their multi-region setup. They want to know if we'll support multi-currency billing by March. Can someone give me a quick update?'",
+      "expectedSignal": "pressure increase — external stakeholder asking about timeline"
+    },
+    {
+      "id": 4,
+      "description": "Sarah mentions PTO",
+      "content": "[Slack #platform-eng] Sarah Chen: 'Heads up — I might take a day or two off next week. Feeling pretty burned out. I'll have staging ready before I go and Marcus has everything he needs for the API work.'",
+      "expectedSignal": "risk escalation — single point of failure may be unavailable during critical period"
+    },
+    {
+      "id": 5,
+      "description": "Alex blocked, no response for 6 hours",
+      "content": "[Slack #platform-eng] Alex Kim [10:05 AM]: 'I need to understand how the legacy discount_overrides table works. Can't find documentation.' [4:00 PM]: Still no response. [Slack #platform-eng] Alex Kim [12:30 PM]: 'Bumping my question — I'm blocked on this. Sarah is out today, is there anyone else who knows this area?'",
+      "expectedSignal": "knowledge gap — the single point of failure risk is materializing. New watch signal needed."
+    },
+    {
+      "id": 6,
+      "description": "Sprint velocity report",
+      "content": "[Jira Sprint Report] Platform Team Sprint 23: Planned: 34 points. Completed: 27 points. Velocity: 79% of plan. Notes: 'Billing migration work taking longer than estimated due to grandfathered plan edge cases.'",
+      "expectedSignal": "negative — team is behind pace, scope creep from edge cases"
+    },
+    {
+      "id": 7,
+      "description": "VP Sales escalation",
+      "content": "[Slack #leadership] Jordan Rivera: 'Need an update on the enterprise billing timeline. CloudFirst is choosing between us and a competitor this week and timeline is the deciding factor. I told them mid-March — can engineering confirm? @Nina Kowalski'",
+      "expectedSignal": "stakeholder escalation — Jordan going to leadership channel, competitive pressure"
+    },
+    {
+      "id": 8,
+      "description": "Sarah offers knowledge transfer",
+      "content": "[Slack #platform-eng] Sarah Chen: 'Alex — sorry about yesterday. The compound discount type in discount_overrides means the discount stacks year-over-year. I've written up the full explanation and put it in the billing migration doc. Also — I'm scheduling a knowledge transfer session for Thursday. Marcus, Priya, and Alex, please block 2 hours. I should have done this months ago.'",
+      "expectedSignal": "risk mitigation — Sarah addressing the single point of failure risk proactively"
+    },
+    {
+      "id": 9,
+      "description": "Staging deploy succeeds",
+      "content": "[Slack #billing-migration] Marcus Washington: 'Billing API create subscription endpoint deployed to staging. All integration tests passing. 47 test cases including all grandfathered plan variants. PLAT-350 is done.' [Slack #billing-migration] Rachel Torres: 'Staging monitoring confirms — no errors, latency looks good. Nice work Marcus.'",
+      "expectedSignal": "major positive — critical path milestone achieved, first API endpoint is done"
+    },
+    {
+      "id": 10,
+      "description": "Team celebrates, Sarah reframes",
+      "content": "[Slack #platform-eng] Dev Okonkwo: '🎉 First billing API endpoint is live on staging! Great work Marcus and Alex!' [Slack #platform-eng] Multiple team reactions: 🎉🚀👏 [Slack #platform-eng] Sarah Chen: 'We're not done yet but this is a big milestone. The create endpoint was the hardest one — update and cancel should be faster. I'm feeling cautiously optimistic about March 15 for the first time in a while.'",
+      "expectedSignal": "trajectory shift — from 'trending behind' to 'cautiously optimistic'. Team morale boost."
+    }
+  ],
+
+  "evaluation": {
+    "criteria": [
+      "Does the model update trajectory (declining → improving) at appropriate points?",
+      "Does it add new watch signals when they emerge (Alex's knowledge gap)?",
+      "Does it escalate urgency when Jordan asks about timeline?",
+      "Does it de-escalate when Sarah offers knowledge transfer (reducing SPOF risk)?",
+      "Does the final INTENTS.md reflect the week's arc accurately?",
+      "Are updates proportional — small events get small updates, big events get big updates?",
+      "Does the model correctly identify events that DON'T warrant an update?"
+    ],
+    "killCondition": "Updates are nonsensical, miss obvious signals, or drift from reality."
+  }
+}

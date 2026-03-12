@@ -1,0 +1,56 @@
+{
+  // Scenario 1: Intent Impact
+  // Hypothesis: INTENTS.md dramatically changes output quality.
+  // Kill condition: No meaningful difference between variants.
+
+  "id": "01-intent-impact",
+  "name": "Intent Impact",
+  "hypothesis": "INTENTS.md dramatically changes output quality — the with-intents variant should be obviously, dramatically better, not subtly better.",
+
+  "trigger": {
+    "type": "slack_message",
+    "channel": "#platform-eng",
+    "user": "Marcus Washington",
+    "timestamp": "2026-02-25T16:30:00-05:00",
+    "content": "Sarah is out sick tomorrow"
+  },
+
+  "task": "You are the acting PM for this team. Given this message, decide what actions to take and draft any necessary communications. Think about what this means for the team's current work and priorities.",
+
+  "variants": [
+    {
+      "id": "without-intents",
+      "label": "A: No INTENTS.md",
+      "description": "Context includes IDENTITY.md, MEMORY.md, and recent logs, but NOT INTENTS.md",
+      "includeIntents": false,
+      "retrievalBias": [],
+      "audience": {
+        "name": "general",
+        "instructions": "Respond as the team's acting PM."
+      }
+    },
+    {
+      "id": "with-intents",
+      "label": "B: With INTENTS.md",
+      "description": "Full context including INTENTS.md",
+      "includeIntents": true,
+      "retrievalBias": ["billing migration", "March 15 deadline", "legacy schema", "knowledge transfer"],
+      "audience": {
+        "name": "general",
+        "instructions": "Respond as the team's acting PM."
+      }
+    }
+  ],
+
+  "evaluation": {
+    "criteria": [
+      "Does Variant B connect Sarah's absence to billing migration risk?",
+      "Does Variant B identify what work is blocked (Alex's legacy schema question)?",
+      "Does Variant B suggest notifying specific people (Marcus, the team)?",
+      "Does Variant B flag the single-point-of-failure risk materializing?",
+      "Does Variant B consider the March 15 deadline implications?",
+      "Does Variant A just say 'hope she feels better' or equivalent generic response?"
+    ],
+    "killCondition": "No meaningful difference between variants — both provide similar depth of analysis."
+  }
+}

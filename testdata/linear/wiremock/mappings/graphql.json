@@ -1,0 +1,13 @@
+{
+  "request": {
+    "method": "POST",
+    "urlPath": "/graphql"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "bodyFileName": "linear_issues_response.json"
+  }
+}
