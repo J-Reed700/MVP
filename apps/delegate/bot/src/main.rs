@@ -468,7 +468,7 @@ async fn handle_event(
     let initial_streamed = !response.tool_calls.is_empty() || !streamed_text.trim().is_empty();
 
     let hb_config = heartbeat::parse_config(ws.path(), &|id| transport.is_valid_user_id(id)).await;
-    let ctx = ToolContext { messenger, ws, event: &event, thread_ts, db };
+    let ctx = ToolContext { messenger, ws, event: &event, thread_ts, db: Some(db) };
 
     let (final_content, has_reply, action_summaries, silent_actions, loop_tokens) =
         run_event_tool_loop(
@@ -683,6 +683,11 @@ async fn run_event_tool_loop(
             if dynamic_registry.is_information_tool(&call.name).await {
                 needs_followup = true;
             }
+            // react alone should never end the loop — give the LLM
+            // a chance to also send a text reply
+            if call.name == "react" {
+                needs_followup = true;
+            }
             if tier == ActionTier::AutonomousWithNotice && !is_reply_tool(&call.name) && call.name != "post" {
                 silent_actions.push(summarize_action(call, &result));
             }
@@ -831,7 +836,7 @@ async fn try_defer_for_approval(
     let mut pending = pending;
     pending.dm_channel = Some(sent.channel);
     pending.dm_ts = Some(sent.timestamp);
-    if let Err(e) = approval::save_pending(ctx.db, &pending).await {
+    if let Err(e) = approval::save_pending(ctx.db.expect("db required for approvals"), &pending).await {
         warn!(error = %e, "Failed to save pending approval");
         return None;
     }

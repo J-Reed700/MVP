@@ -121,11 +121,11 @@ static REGISTRY: &[ToolEntry] = &[
     },
     ToolEntry {
         name: "write_file",
-        description: "Write a file to your workspace.",
+        description: "Write a file and share it in the conversation. Shareable formats (csv, json, md, txt, html) are auto-uploaded to the Slack thread.",
         scope: ToolScope::Event,
         tier: ActionTier::RequiresApproval,
         frequency: Frequency::Sparingly,
-        when: "Persist structured state to workspace — tickets, notes, data files. Always read_file first to avoid overwriting.",
+        when: "Create deliverables (CSVs, reports, docs) or persist state. Shareable files are auto-uploaded to the thread — never tell users to check the workspace. Always read_file first to avoid overwriting.",
         is_information: false,
         is_reply: false,
         schema_fn: schema_write_file,
@@ -242,11 +242,11 @@ static REGISTRY: &[ToolEntry] = &[
     },
     ToolEntry {
         name: "run_script",
-        description: "Execute a Python or shell script.",
+        description: "Execute Python or shell with full access to filesystem, network, database, and packages. Your most powerful tool — if you don't have a dedicated tool for something, you can do it here.",
         scope: ToolScope::Event,
         tier: ActionTier::RequiresApproval,
-        frequency: Frequency::Sparingly,
-        when: "Run a script when you need to compute, transform data, or execute a skill handler. Explain what the script does before running it.",
+        frequency: Frequency::WhenRelevant,
+        when: "Your general-purpose escape hatch. Use whenever you need to do something you don't have a dedicated tool for: query/modify the database, call APIs, generate files, process data, install packages. Never say 'I can't do that' without first considering run_script.",
         is_information: true,
         is_reply: false,
         schema_fn: schema_run_script,
@@ -283,6 +283,28 @@ static REGISTRY: &[ToolEntry] = &[
         is_information: false,
         is_reply: false,
         schema_fn: schema_set_reminder,
+    },
+    ToolEntry {
+        name: "list_reminders",
+        description: "List all active (unfired) reminders.",
+        scope: ToolScope::Event,
+        tier: ActionTier::Autonomous,
+        frequency: Frequency::WhenRelevant,
+        when: "Use when someone asks about active reminders or you need to find a reminder ID to delete.",
+        is_information: true,
+        is_reply: false,
+        schema_fn: schema_list_reminders,
+    },
+    ToolEntry {
+        name: "delete_reminder",
+        description: "Delete a reminder by ID, or delete all reminders.",
+        scope: ToolScope::Event,
+        tier: ActionTier::Autonomous,
+        frequency: Frequency::WhenRelevant,
+        when: "Use when someone asks to cancel or remove reminders. Use list_reminders first to get IDs.",
+        is_information: false,
+        is_reply: false,
+        schema_fn: schema_delete_reminder,
     },
     ToolEntry {
         name: "connect_integration",
@@ -373,6 +395,8 @@ pub fn tool_playbook(scope: ToolScope) -> String {
     }
 
     lines.push(String::new());
+    lines.push("**When someone asks a direct question, ALWAYS reply with text.** A reaction alone is never a sufficient response to a question. React + reply, or just reply — but never react-only when someone is asking you something.".to_string());
+    lines.push(String::new());
     lines.push("Only say things you actually know. Never fabricate people, projects, or facts. If you don't have context, say so.".to_string());
 
     // Few-shot examples — models follow examples better than rules
@@ -398,6 +422,41 @@ pub fn tool_playbook(scope: ToolScope) -> String {
          > \"we're kicking off API v2 next week — can you set up a channel and get Sarah and Alan in there?\"\n\
          → create_channel(name: \"api-v2\", purpose: \"API v2 rewrite\") + invite_to_channel(channel: \"api-v2\", users: [\"U_SARAH\", \"U_ALAN\"]) + reply(\"Done — #api-v2 is live, Sarah and Alan are in.\")\n\
          *When someone says \"set up a channel\" or \"make a channel\" — use create_channel, then invite_to_channel.*\n".to_string()
+    );
+
+    lines.push(
+        "**Someone shares news that affects people not in the conversation:**\n\
+         > \"Sarah's auth PR is ready, Alan should review it today\"\n\
+         → recall_memory(\"auth PR webhook Alan Sarah\") → check what you know → reply with relevant context the speaker may not have\n\
+         *Even if nobody asked you a question, if you have context that enriches or complicates what was just said, SPEAK UP. A react + save is not enough — reply with the insight.*\n".to_string()
+    );
+
+    lines.push(
+        "**Someone thinks out loud about a scope or direction change:**\n\
+         > \"thinking out loud — should we cut billing export from v1?\"\n\
+         → log_decision(decision: \"Considering cutting billing export from v1\", reasoning: ...) + reply with your perspective\n\
+         *\"Thinking out loud\" and \"let's just\" and \"should we\" are decisions in progress. Log them immediately — they're easy to lose.*\n".to_string()
+    );
+
+    lines.push(
+        "**Someone asks for a summary, digest, or standup:**\n\
+         > \"I missed everything today, give me the 30-second digest\"\n\
+         → recall_memory(\"today's activity\") + read_file(logs) → synthesize into a concise reply\n\
+         *Always check memory and logs before writing summaries. Don't guess from context alone — retrieve first, then synthesize.*\n".to_string()
+    );
+
+    lines.push(
+        "**Someone shares a fact that has downstream implications:**\n\
+         > \"heads up — Alan is going to be out all next week\"\n\
+         → recall_memory(\"Alan blockers deadlines\") → reply flagging what's at risk (reviews, deadlines, handoffs)\n\
+         *When someone shares news, think: who depends on this person? What deadlines are affected? Always recall and connect the dots — then say it out loud.*\n".to_string()
+    );
+
+    lines.push(
+        "**Someone asks you to log, save, or record something:**\n\
+         > \"Stripe is deprecating webhook signature v1 by April 1st. Log this.\"\n\
+         → log_decision(...) + reply confirming what you logged and flagging any implications\n\
+         *After logging or saving, always reply to confirm the action and surface any implications you see. Silent saves leave the human wondering if you did anything.*\n".to_string()
     );
 
     lines.join("\n")
@@ -542,7 +601,7 @@ fn schema_write_file() -> Value {
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write a file to your workspace. Path is relative to the workspace root. Creates parent directories if needed. Use this to persist state — tickets, notes, memory, data.",
+            "description": "Write a file to your workspace and auto-upload shareable formats (csv, json, md, txt, html, xml, docx, xlsx, pdf) to the Slack thread. Users can download directly — never tell them to check the workspace.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -812,7 +871,7 @@ fn schema_run_script() -> Value {
         "type": "function",
         "function": {
             "name": "run_script",
-            "description": "Execute a Python or shell script. The script runs in the workspace directory with a 30-second timeout. Use this to compute, transform data, or run skill handler scripts.",
+            "description": "Execute a Python or shell script with full access to filesystem, network, database (Postgres via DATABASE_URL env var), and installed packages. Runs in workspace directory (cwd) with 30-second timeout. IMPORTANT: Use RELATIVE paths for output files (e.g. 'chart.png', 'report.pdf') — NOT /tmp/. New files are auto-uploaded to the Slack thread. This is your most powerful tool — use it whenever you lack a dedicated tool.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -913,6 +972,50 @@ fn schema_set_reminder() -> Value {
                     }
                 },
                 "required": ["message", "delay_minutes"]
+            }
+        }
+    })
+}
+
+fn schema_list_reminders() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "list_reminders",
+            "description": "List all active (unfired) reminders. Optionally filter by channel.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel": {
+                        "type": "string",
+                        "description": "Optional channel ID to filter by. Omit to list all."
+                    }
+                },
+                "required": []
+            }
+        }
+    })
+}
+
+fn schema_delete_reminder() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "delete_reminder",
+            "description": "Delete a reminder by its UUID, or pass 'all' to delete all active reminders. Use list_reminders first to find the ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Reminder UUID to delete, or 'all' to delete all active reminders."
+                    },
+                    "channel": {
+                        "type": "string",
+                        "description": "When id='all', optionally limit deletion to this channel."
+                    }
+                },
+                "required": ["id"]
             }
         }
     })

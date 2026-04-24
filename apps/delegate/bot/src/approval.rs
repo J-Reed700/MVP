@@ -185,7 +185,7 @@ pub async fn handle_reaction(
             ws,
             event: &synthetic_event,
             thread_ts,
-            db,
+            db: Some(db),
         };
         let result = crate::tools::execute_tool(&tool_call, &ctx).await;
 
