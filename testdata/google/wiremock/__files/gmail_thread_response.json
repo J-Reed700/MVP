@@ -1,0 +1,42 @@
+{
+  "id": "thr0003",
+  "historyId": "99301",
+  "messages": [
+    {
+      "id": "msg-thr3-1",
+      "threadId": "thr0003",
+      "labelIds": ["INBOX", "IMPORTANT"],
+      "snippet": "DEV-34 blocker — 40k store employees affected. Need status today.",
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          { "name": "From",    "value": "Robin Hart <robin.hart@globalretail.com>" },
+          { "name": "To",      "value": "Carlos Rivera <carlos@acme.io>" },
+          { "name": "Subject", "value": "DEV-34 deep link fix — status" },
+          { "name": "Date",    "value": "Mon, 9 Mar 2026 21:00:00 -0500" }
+        ],
+        "body": {
+          "data": "Carlos — per our Gong call today (gong-00007) I need a written status on the Android 14 deep link fix. PR #190. My VP is asking. We have 40,000 store employees who cannot log in. Please confirm: merging this Friday regardless of CI, daily updates starting tomorrow, post-mortem within 2 weeks. — Robin"
+        }
+      }
+    },
+    {
+      "id": "msg-thr3-2",
+      "threadId": "thr0003",
+      "labelIds": ["SENT", "IMPORTANT"],
+      "snippet": "Confirmed on all three. Intent filter fix merges EOD Friday.",
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          { "name": "From",    "value": "Carlos Rivera <carlos@acme.io>" },
+          { "name": "To",      "value": "Robin Hart <robin.hart@globalretail.com>" },
+          { "name": "Subject", "value": "Re: DEV-34 deep link fix — status" },
+          { "name": "Date",    "value": "Mon, 9 Mar 2026 22:15:00 -0500" }
+        ],
+        "body": {
+          "data": "Robin — confirmed on all three. 1) PR #190 merges Friday EOD regardless of CI (flaky test tracked separately in Linear ENG-102). 2) Daily status DM at 9am starting tomorrow until customer-facing confirmation. 3) Post-mortem drafted and shared within 2 weeks of merge. I own this. — Carlos"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "request": {
+    "method": "PATCH",
+    "urlPathPattern": "/v1/blocks/[a-f0-9-]+/children"
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": {
+      "object": "list",
+      "results": [
+        {
+          "object": "block",
+          "id": "block-appended-0001",
+          "type": "paragraph",
+          "has_children": false,
+          "paragraph": {
+            "rich_text": [{ "type": "text", "text": { "content": "Block appended (mock response)." } }]
+          }
+        }
+      ],
+      "next_cursor": null,
+      "has_more": false
+    }
+  }
+}

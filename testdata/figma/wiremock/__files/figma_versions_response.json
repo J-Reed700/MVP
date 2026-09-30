@@ -1,0 +1,25 @@
+{
+  "versions": [
+    {
+      "id": "ver-0005",
+      "created_at": "2026-03-10T14:45:00Z",
+      "label": "Sprint 12 — final onboarding designs",
+      "description": "Incorporates feedback from design review. SkipLink component added. Mobile variant pending DEV-34 fix.",
+      "user": { "handle": "diana.wu", "img_url": "" }
+    },
+    {
+      "id": "ver-0004",
+      "created_at": "2026-03-07T18:00:00Z",
+      "label": "Pre-review revisions",
+      "description": "Simplified welcome screen per Bob's feedback. Updated progress bar tokens for dark mode compat.",
+      "user": { "handle": "diana.wu", "img_url": "" }
+    },
+    {
+      "id": "ver-0003",
+      "created_at": "2026-03-01T10:00:00Z",
+      "label": "Initial onboarding v3 draft",
+      "description": "First pass on DEV-42 redesign. Welcome, profile setup, team invite, completion.",
+      "user": { "handle": "diana.wu", "img_url": "" }
+    }
+  ]
+}

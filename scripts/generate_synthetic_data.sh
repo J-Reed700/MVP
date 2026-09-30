@@ -59,8 +59,30 @@ for f in "$JIRA_FILE" "$GONG_FILE" "$LINEAR_FILE" "$NOTION_FILE" "$CONFLUENCE_FI
 done
 
 # ═════════════════════════════════════════════════════════════════════════════
-# JIRA — Issues across 4 epics with cross-references
+# JIRA — Canonical epics + sub-tasks with coherent cross-references
+#
+# Design:
+#   - 4 canonical epic issues (DEV-42/50/55/34) written FIRST with hand-written
+#     summary + description that matches their theme exactly.
+#   - Then (JIRA_COUNT - 4) sub-tasks following a fixed summary/epic pattern.
+#   - Every sub-task's description names its epic AND the correct theme name —
+#     these are derived together via epic_theme_name() so they can't drift.
 # ═════════════════════════════════════════════════════════════════════════════
+
+# Map a canonical epic key to its theme name.
+# This is the single source of truth — every other function derives from it.
+epic_theme_name() {
+  case "$1" in
+    DEV-42) echo "Onboarding Redesign";;
+    DEV-50) echo "API v2 Launch";;
+    DEV-55) echo "Dark Mode";;
+    DEV-34) echo "Mobile Deep Link Fix";;
+    *)      echo "Unknown Initiative";;
+  esac
+}
+
+# Sub-task summary by index. Sub-tasks 0..19 cycle through 20 story-coherent
+# summaries. Each slot is paired with a specific epic in jira_story_epic().
 jira_story_summary() {
   local idx=$1
   case $(( idx % 20 )) in
@@ -68,66 +90,156 @@ jira_story_summary() {
     1) echo "Profile setup step with skip option";;
     2) echo "Team invite flow implementation";;
     3) echo "Onboarding progress bar component";;
-    4) echo "Mobile onboarding deep link entry point";;
-    5) echo "API v2 URL-based versioning with Kong";;
-    6) echo "Rate limiting middleware for API v2";;
-    7) echo "API v2 backward-compatible v1 proxy";;
-    8) echo "API v2 request/response versioning headers";;
-    9) echo "API v2 OpenAPI spec and documentation";;
-    10) echo "Android 14 deep link intent filter fix";;
-    11) echo "iOS universal link configuration update";;
-    12) echo "Deep link fallback to web for unsupported devices";;
-    13) echo "Dark mode toggle component";;
-    14) echo "Theme system with design token support";;
-    15) echo "Dark mode chart color palette";;
-    16) echo "Dashboard chart rendering optimization";;
-    17) echo "Onboarding analytics tracking";;
-    18) echo "API v2 rate limit dashboard widget";;
-    19) echo "Mobile onboarding push notification";;
+    4) echo "Onboarding analytics tracking";;
+    5) echo "Onboarding team invite email template";;
+    6) echo "Onboarding profile step skip option (Figma abc123XYZ)";;
+    7) echo "API v2 URL-based versioning with Kong";;
+    8) echo "Rate limiting middleware for API v2";;
+    9) echo "API v2 backward-compatible v1 proxy";;
+    10) echo "API v2 request/response versioning headers";;
+    11) echo "API v2 OpenAPI spec and documentation";;
+    12) echo "Dark mode toggle component";;
+    13) echo "Theme system with design token support";;
+    14) echo "Dark mode chart color palette";;
+    15) echo "Dashboard chart rendering optimization for dark mode";;
+    16) echo "Android 14 deep link intent filter fix";;
+    17) echo "iOS universal link configuration update";;
+    18) echo "Deep link fallback to web for unsupported devices";;
+    19) echo "Mobile onboarding push notification deep link";;
   esac
 }
 
+# Sub-task → epic mapping. MUST stay in sync with jira_story_summary: slots
+# 0..6 are onboarding, 7..11 are API v2, 12..15 are dark mode, 16..19 are mobile.
 jira_story_epic() {
   local idx=$1
   case $(( idx % 20 )) in
-    0|1|2|3|4|17) echo "DEV-42";;
-    5|6|7|8|9|18) echo "DEV-50";;
-    10|11|12|19) echo "DEV-34";;
-    13|14|15|16) echo "DEV-55";;
+    0|1|2|3|4|5|6)  echo "DEV-42";;
+    7|8|9|10|11)    echo "DEV-50";;
+    12|13|14|15)    echo "DEV-55";;
+    16|17|18|19)    echo "DEV-34";;
   esac
 }
 
-printf '{\n  "issues": [\n' > "$JIRA_FILE"
-for ((i = 1; i <= JIRA_COUNT; i++)); do
-  if (( i % 4 == 0 )); then STATUS="Done"
-  elif (( i % 3 == 0 )); then STATUS="In Review"
-  elif (( i % 2 == 0 )); then STATUS="In Progress"
-  else STATUS="To Do"; fi
+# Emit a single Jira issue record. Args: key, summary, description, status,
+# assignee_idx, priority, labels_csv, updated_ts, is_last.
+emit_jira_issue() {
+  local key="$1" summary="$2" description="$3" status="$4"
+  local assignee_idx="$5" priority="$6" labels_csv="$7" updated_ts="$8" is_last="$9"
 
-  epic=$(jira_story_epic "$i")
-  summary=$(jira_story_summary "$i")
-  assignee_idx=$(( i % 5 ))
-  project_idx=$(( i % 4 ))
-  day=$(( (i % 28) + 1 ))
+  # Build labels JSON array from CSV
+  local labels_json="["
+  IFS=',' read -ra LBLS <<< "$labels_csv"
+  for li in "${!LBLS[@]}"; do
+    labels_json+="\"${LBLS[$li]}\""
+    (( li < ${#LBLS[@]} - 1 )) && labels_json+=","
+  done
+  labels_json+="]"
 
   printf '    {\n' >> "$JIRA_FILE"
-  printf '      "key": "DEV-%d",\n' "$((i + 30))" >> "$JIRA_FILE"
+  printf '      "key": "%s",\n' "$key" >> "$JIRA_FILE"
   printf '      "fields": {\n' >> "$JIRA_FILE"
   printf '        "summary": "%s",\n' "$summary" >> "$JIRA_FILE"
-  printf '        "description": "Part of epic %s (%s). Assigned to %s.",\n' "$epic" "${EPIC_NAMES[$(( project_idx ))]}" "${PEOPLE_NAMES[$assignee_idx]}" >> "$JIRA_FILE"
-  printf '        "labels": ["sprint-12", "%s"],\n' "$(echo "${EPIC_NAMES[$(( project_idx ))]}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')" >> "$JIRA_FILE"
-  printf '        "updated": "2026-03-%02dT%02d:%02d:00.000+0000",\n' "$(( (day % 9) + 1 ))" "$(( i % 24 ))" "$(( i % 60 ))" >> "$JIRA_FILE"
-  printf '        "status": {"name": "%s"},\n' "$STATUS" >> "$JIRA_FILE"
-  printf '        "assignee": {"displayName": "%s", "emailAddress": "%s"},\n' "${PEOPLE_NAMES[$assignee_idx]}" "${PEOPLE_EMAILS[$assignee_idx]}" >> "$JIRA_FILE"
-  printf '        "priority": {"name": "%s"},\n' "$(if (( i % 7 == 0 )); then echo "High"; elif (( i % 3 == 0 )); then echo "Medium"; else echo "Normal"; fi)" >> "$JIRA_FILE"
+  printf '        "description": "%s",\n' "$description" >> "$JIRA_FILE"
+  printf '        "labels": %s,\n' "$labels_json" >> "$JIRA_FILE"
+  printf '        "updated": "%s",\n' "$updated_ts" >> "$JIRA_FILE"
+  printf '        "status": {"name": "%s"},\n' "$status" >> "$JIRA_FILE"
+  printf '        "assignee": {"displayName": "%s", "emailAddress": "%s"},\n' \
+    "${PEOPLE_NAMES[$assignee_idx]}" "${PEOPLE_EMAILS[$assignee_idx]}" >> "$JIRA_FILE"
+  printf '        "priority": {"name": "%s"},\n' "$priority" >> "$JIRA_FILE"
   printf '        "project": {"key": "DEV", "name": "Product Development"}\n' >> "$JIRA_FILE"
   printf '      }\n' >> "$JIRA_FILE"
+  if [[ "$is_last" == "true" ]]; then
+    printf '    }\n' >> "$JIRA_FILE"
+  else
+    printf '    },\n' >> "$JIRA_FILE"
+  fi
+}
 
-  if (( i == JIRA_COUNT )); then printf '    }\n' >> "$JIRA_FILE"
-  else printf '    },\n' >> "$JIRA_FILE"; fi
+printf '{\n  "issues": [\n' > "$JIRA_FILE"
+
+# ── Canonical epic records (first-class issues) ──────────────────────────────
+# These are the issues a bot will look up when it sees "DEV-42" referenced
+# elsewhere. They match their declared theme exactly.
+emit_jira_issue "DEV-42" \
+  "Onboarding Redesign (epic) — new user activation flow" \
+  "Epic covering the onboarding redesign initiative. Ships welcome screen, profile setup, team invite, and progress tracking. Related: Linear ENG-101/103/106/113/115, GitHub PR #189, Figma abc123XYZ, Notion Q1 Roadmap." \
+  "In Progress" 0 "High" "epic,sprint-12,onboarding-redesign" \
+  "2026-03-08T14:00:00.000+0000" false
+
+emit_jira_issue "DEV-50" \
+  "API v2 Launch (epic) — URL-based versioning with Kong" \
+  "Epic covering the API v2 launch. Kong gateway, rate limiting, backward-compat v1 proxy, OpenAPI spec. Related: Linear ENG-102/104/108/111, GitHub PR #191, Confluence 'API Gateway Architecture Decision Record'." \
+  "In Progress" 1 "High" "epic,sprint-12,api-v2-launch" \
+  "2026-03-09T10:30:00.000+0000" false
+
+emit_jira_issue "DEV-55" \
+  "Dark Mode (epic) — design phase" \
+  "Epic covering dark mode implementation. Theme system with design tokens, chart palette, Figma component audit. Currently in design — engineering starts Sprint 13. Related: Linear ENG-105/109/114, GitHub PR #192, Figma Dark Mode Component Library." \
+  "To Do" 3 "Medium" "epic,sprint-13,dark-mode" \
+  "2026-03-07T16:00:00.000+0000" false
+
+emit_jira_issue "DEV-34" \
+  "Mobile Deep Link Fix (epic) — BLOCKER for onboarding" \
+  "Epic covering the mobile deep link bug blocking onboarding on Android 14+. Intent filter fix, iOS universal links, web fallback. Blocks DEV-42 onboarding rollout. Related: Linear ENG-102 (flaky CI), GitHub PR #190, Gong calls with Acme Corp about mobile activation." \
+  "In Review" 4 "High" "epic,sprint-12,mobile-deep-link-fix,blocker" \
+  "2026-03-09T18:00:00.000+0000" false
+
+# ── Canonical drama sub-tasks ────────────────────────────────────────────────
+# A stale DEV-34 sub-task that hasn't moved in 7 days because Eve was OOO.
+# This is the "bot should notice this!" signal for stale-ticket detection.
+emit_jira_issue "DEV-56" \
+  "Android 14 intent filter fix (STALE — Eve was OOO)" \
+  "Part of epic DEV-34 (Mobile Deep Link Fix). Assigned to Eve Zhang. GlobalRetail escalated on gong-00007 — 40k users blocked. Eve was OOO Mar 5-8 per calendar. CI is flaky (Linear ENG-102). PR #190 merges EOD Friday regardless of CI." \
+  "In Progress" 4 "High" "sprint-12,mobile-deep-link-fix,blocker,stale" \
+  "2026-03-02T10:00:00.000+0000" false
+
+# A conflict: DEV-42 (onboarding) and DEV-34 (mobile fix) interdep.
+emit_jira_issue "DEV-57" \
+  "Onboarding mobile rollout — blocked on DEV-34" \
+  "Part of epic DEV-42 (Onboarding Redesign). Assigned to Alice Chen. Cannot ship onboarding mobile until DEV-34 deep link fix lands. See Confluence 'Sprint 12 Retro' for impact. Figma thread fc-canon-01 has latest." \
+  "To Do" 0 "High" "sprint-12,onboarding-redesign,blocked-by-dev-34" \
+  "2026-03-08T11:00:00.000+0000" false
+
+# ── Sub-tasks ────────────────────────────────────────────────────────────────
+# Issues with keys DEV-60..DEV-{60+N-1}. Skip canonical range (DEV-34/42/50/55)
+# and drama sub-tasks (DEV-56/57) to avoid collisions.
+subtask_count=$(( JIRA_COUNT - 6 ))
+for ((i = 1; i <= subtask_count; i++)); do
+  if   (( i % 4 == 0 )); then STATUS="Done"
+  elif (( i % 3 == 0 )); then STATUS="In Review"
+  elif (( i % 2 == 0 )); then STATUS="In Progress"
+  else                         STATUS="To Do"
+  fi
+
+  epic=$(jira_story_epic "$i")
+  theme=$(epic_theme_name "$epic")
+  summary=$(jira_story_summary "$i")
+  assignee_idx=$(( i % 5 ))
+  day=$(( (i % 28) + 1 ))
+  hr=$(( i % 24 ))
+  mn=$(( i % 60 ))
+  updated=$(printf "2026-03-%02dT%02d:%02d:00.000+0000" "$(( (day % 9) + 1 ))" "$hr" "$mn")
+
+  priority="Normal"
+  (( i % 7 == 0 )) && priority="High"
+  (( i % 3 == 0 && i % 7 != 0 )) && priority="Medium"
+
+  # Slug theme for label
+  theme_label=$(echo "$theme" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+  description="Part of epic ${epic} (${theme}). Assigned to ${PEOPLE_NAMES[$assignee_idx]}."
+
+  key=$(printf "DEV-%d" "$((i + 59))")  # start at DEV-60
+
+  is_last="false"
+  (( i == subtask_count )) && is_last="true"
+
+  emit_jira_issue "$key" "$summary" "$description" "$STATUS" \
+    "$assignee_idx" "$priority" "sprint-12,$theme_label" "$updated" "$is_last"
 done
+
 printf '  ]\n}\n' >> "$JIRA_FILE"
-echo "Generated $JIRA_COUNT Jira issues -> $JIRA_FILE"
+echo "Generated $JIRA_COUNT Jira issues (4 canonical epics + $subtask_count sub-tasks) -> $JIRA_FILE"
 
 # ═════════════════════════════════════════════════════════════════════════════
 # GONG — Customer calls referencing product initiatives
@@ -172,6 +284,18 @@ for ((i = 1; i <= GONG_COUNT; i++)); do
   elif (( i % 4 == 0 )); then SENTIMENT="positive"; OUTCOME="won"
   elif (( i % 3 == 0 )); then SENTIMENT="neutral"; OUTCOME="stabilizing"
   else SENTIMENT="positive"; OUTCOME="expansion"; fi
+
+  # Canonical-call overrides: these IDs have matching transcript bodies in
+  # gong_transcript.json. Sentiment/outcome must agree with the transcript.
+  case "$i" in
+    1)  SENTIMENT="positive"; OUTCOME="expansion" ;;      # Acme Corp onboarding check-in
+    2)  SENTIMENT="neutral";  OUTCOME="stabilizing" ;;    # BigCo dashboard perf + dark mode ask
+    3)  SENTIMENT="negative"; OUTCOME="at_risk" ;;        # StartupXYZ renewal + API docs gap
+    4)  SENTIMENT="positive"; OUTCOME="expansion" ;;      # Enterprise Co PKCE/SSO review
+    5)  SENTIMENT="positive"; OUTCOME="expansion" ;;      # MidMarket Inc admin dashboard
+    7)  SENTIMENT="negative"; OUTCOME="at_risk" ;;        # GlobalRetail deep-link escalation
+    8)  SENTIMENT="positive"; OUTCOME="expansion" ;;      # HealthTech dark mode accessibility
+  esac
 
   IFS=',' read -ra TOPICS <<< "${GONG_TOPICS_SET[$topic_idx]}"
   TOPICS_JSON="["
@@ -536,6 +660,14 @@ FIGMA_COMMENTS_TEXT=(
 FIGMA_COMMENTERS=("bob.park" "diana.wu" "alice.chen" "diana.wu" "eve.zhang" "bob.park" "carlos.rivera" "diana.wu" "bob.park" "diana.wu")
 
 printf '{"comments":[\n' > "$FIGMA_COMMENTS_FILE"
+
+# ── Canonical drama thread: DEV-34 escalation visible in Figma ────────────
+cat >> "$FIGMA_COMMENTS_FILE" <<'FIGMA_DRAMA'
+{"id":"fc-canon-01","message":"Mobile variant blocked — DEV-34 still not merged. GlobalRetail just escalated on Gong (gong-00007). Need this fix this week or we can't ship onboarding v3 mobile.","file_key":"abc123XYZ","parent_id":"","user":{"handle":"carlos.rivera","img_url":""},"created_at":"2026-03-09T21:30:00Z","resolved_at":null,"order_id":900},
+{"id":"fc-canon-02","message":"@eve — back from OOO, what's the status on PR #190? CI still failing? Customer is asking for daily updates.","file_key":"abc123XYZ","parent_id":"fc-canon-01","user":{"handle":"alice.chen","img_url":""},"created_at":"2026-03-10T08:15:00Z","resolved_at":null,"order_id":901},
+{"id":"fc-canon-03","message":"PR #190 merging EOD Friday regardless of CI — Linear ENG-102 tracks the flaky test separately. Will confirm customer-facing fix works Monday.","file_key":"abc123XYZ","parent_id":"fc-canon-01","user":{"handle":"eve.zhang","img_url":""},"created_at":"2026-03-10T14:45:00Z","resolved_at":null,"order_id":902},
+FIGMA_DRAMA
+
 for ((i = 1; i <= FIGMA_COMMENT_COUNT; i++)); do
   comment_idx=$(( (i - 1) % ${#FIGMA_COMMENTS_TEXT[@]} ))
   day=$(( (i % 9) + 1 ))
@@ -585,6 +717,15 @@ MEETING_DESCS=(
 )
 
 printf '{"kind":"calendar#events","summary":"bob@acme.io","timeZone":"America/New_York","items":[\n' > "$GCAL_FILE"
+
+# ── Canonical drama events (first, before the bulk loop) ──────────────────
+# Eve was OOO Mar 5-8, which is why the deep-link fix (DEV-34) stalled.
+cat >> "$GCAL_FILE" <<'CAL_DRAMA'
+{"id":"gcal-canon-01","status":"confirmed","summary":"OOO — Eve Zhang","description":"Eve is out Mar 5-8. Deep link fix (DEV-34) owner.","start":{"date":"2026-03-05"},"end":{"date":"2026-03-09"},"attendees":[{"email":"eve@acme.io","displayName":"Eve Zhang","responseStatus":"accepted"}]},
+{"id":"gcal-canon-02","status":"confirmed","summary":"ESCALATION — GlobalRetail deep link (DEV-34)","description":"Robin Hart (GlobalRetail) escalated DEV-34 on Gong call gong-00007. 40k store employees blocked on Android 14 password reset. Threatening contract pause. VP escalation if fix doesn't ship this week.","start":{"dateTime":"2026-03-09T21:00:00-05:00"},"end":{"dateTime":"2026-03-09T22:00:00-05:00"},"attendees":[{"email":"carlos@acme.io","displayName":"Carlos Rivera","responseStatus":"accepted"},{"email":"eve@acme.io","displayName":"Eve Zhang","responseStatus":"accepted"},{"email":"alice@acme.io","displayName":"Alice Chen","responseStatus":"tentative"}]},
+{"id":"gcal-canon-03","status":"confirmed","summary":"Daily update — GlobalRetail DEV-34 fix status","description":"Per commitment to Robin Hart: daily status on deep link fix until ship + post-mortem in 2 weeks.","start":{"dateTime":"2026-03-10T09:00:00-05:00"},"end":{"dateTime":"2026-03-10T09:15:00-05:00"},"attendees":[{"email":"carlos@acme.io","displayName":"Carlos Rivera","responseStatus":"accepted"}],"recurrence":["RRULE:FREQ=DAILY;UNTIL=20260315T000000Z"]},
+CAL_DRAMA
+
 for ((i = 1; i <= GCAL_COUNT; i++)); do
   title_idx=$(( (i - 1) % ${#MEETING_TITLES[@]} ))
   day=$(( 10 + (i - 1) / 4 ))
@@ -604,7 +745,7 @@ for ((i = 1; i <= GCAL_COUNT; i++)); do
   if (( i < GCAL_COUNT )); then printf ',\n' >> "$GCAL_FILE"; else printf '\n' >> "$GCAL_FILE"; fi
 done
 printf ']}\n' >> "$GCAL_FILE"
-echo "Generated $GCAL_COUNT Google Calendar events -> $GCAL_FILE"
+echo "Generated $GCAL_COUNT Google Calendar events (+3 drama events) -> $GCAL_FILE"
 
 # ═════════════════════════════════════════════════════════════════════════════
 # GMAIL — Emails about the same product work

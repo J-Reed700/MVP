@@ -1,0 +1,15 @@
+{
+  "priority": 1,
+  "request": {
+    "method": "POST",
+    "urlPath": "/graphql",
+    "bodyPatterns": [
+      { "contains": "projects(first" }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "bodyFileName": "linear_projects_response.json"
+  }
+}

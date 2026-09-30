@@ -1,0 +1,60 @@
+{
+  "results": [
+    {
+      "id": 100,
+      "key": "PROD",
+      "name": "Product",
+      "type": "global",
+      "description": {
+        "plain": {
+          "value": "Product management space — PRDs, roadmaps, retros.",
+          "representation": "plain"
+        }
+      },
+      "_links": {
+        "self": "https://acme.atlassian.net/wiki/rest/api/space/PROD",
+        "webui": "/spaces/PROD"
+      }
+    },
+    {
+      "id": 101,
+      "key": "ENG",
+      "name": "Engineering",
+      "type": "global",
+      "description": {
+        "plain": {
+          "value": "Engineering architecture, ADRs, runbooks.",
+          "representation": "plain"
+        }
+      },
+      "_links": {
+        "self": "https://acme.atlassian.net/wiki/rest/api/space/ENG",
+        "webui": "/spaces/ENG"
+      }
+    },
+    {
+      "id": 102,
+      "key": "CS",
+      "name": "Customer Success",
+      "type": "global",
+      "description": {
+        "plain": {
+          "value": "Customer playbooks, escalation procedures, post-mortems.",
+          "representation": "plain"
+        }
+      },
+      "_links": {
+        "self": "https://acme.atlassian.net/wiki/rest/api/space/CS",
+        "webui": "/spaces/CS"
+      }
+    }
+  ],
+  "start": 0,
+  "limit": 10,
+  "size": 3,
+  "_links": {
+    "base": "https://acme.atlassian.net/wiki",
+    "context": "/wiki",
+    "self": "https://acme.atlassian.net/wiki/rest/api/space"
+  }
+}

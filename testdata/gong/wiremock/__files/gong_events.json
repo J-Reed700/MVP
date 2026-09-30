@@ -24,8 +24,8 @@
         {"name": "Tom Lee", "email": "tom.lee@bigco.com", "role": "customer"}
       ],
       "topics": ["dashboard","analytics","chart performance","dark mode"],
-      "sentiment": "positive",
-      "outcome": "expansion",
+      "sentiment": "neutral",
+      "outcome": "stabilizing",
       "product_refs": "Jira DEV-55 (dark mode), GitHub #228 (chart perf), #236"
     },
     {
@@ -38,8 +38,8 @@
         {"name": "Mike Johnson", "email": "mike.johnson@startupxyz.com", "role": "customer"}
       ],
       "topics": ["renewal","pricing","onboarding ROI","API docs"],
-      "sentiment": "neutral",
-      "outcome": "stabilizing",
+      "sentiment": "negative",
+      "outcome": "at_risk",
       "product_refs": "Jira DEV-42 (onboarding), DEV-50 (API v2), Notion roadmap"
     },
     {
@@ -53,7 +53,7 @@
       ],
       "topics": ["API architecture","security","PKCE","SSO"],
       "sentiment": "positive",
-      "outcome": "won",
+      "outcome": "expansion",
       "product_refs": "Linear ENG-101 (PKCE), GitHub PR #189, #191, Confluence tech specs"
     },
     {
@@ -94,8 +94,8 @@
         {"name": "Robin Hart", "email": "robin.hart@globalretail.com", "role": "customer"}
       ],
       "topics": ["mobile","deep links","Android 14","password reset"],
-      "sentiment": "positive",
-      "outcome": "expansion",
+      "sentiment": "negative",
+      "outcome": "at_risk",
       "product_refs": "Jira DEV-34, GitHub #234, PR #190"
     },
     {
@@ -109,7 +109,7 @@
       ],
       "topics": ["dark mode","theming","accessibility"],
       "sentiment": "positive",
-      "outcome": "won",
+      "outcome": "expansion",
       "product_refs": "Jira DEV-55, GitHub #236, Figma Dashboard Redesign"
     },
     {

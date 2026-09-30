@@ -1,0 +1,28 @@
+{
+  "id": 2190,
+  "number": 190,
+  "title": "fix: Android 14 deep link intent filter + iOS universal link (DEV-34)",
+  "state": "open",
+  "html_url": "https://github.com/acme/product/pull/190",
+  "user": { "login": "eve-zhang" },
+  "head": { "ref": "fix/deep-link-android-14", "sha": "sha0190" },
+  "base": { "ref": "main" },
+  "draft": false,
+  "mergeable": true,
+  "mergeable_state": "blocked",
+  "requested_reviewers": [
+    { "login": "carlos-rivera" },
+    { "login": "alice-chen" }
+  ],
+  "labels": [
+    { "name": "bug" },
+    { "name": "blocker" },
+    { "name": "mobile" }
+  ],
+  "created_at": "2026-03-01T14:00:00Z",
+  "updated_at": "2026-03-10T14:45:00Z",
+  "additions": 142,
+  "deletions": 38,
+  "changed_files": 6,
+  "body": "Fix for Android 14 password-reset deep link (Jira DEV-34). Adds iOS universal link config and web-fallback handler for unsupported devices. Blocked on flaky CI (Linear ENG-102). Per Figma thread fc-canon-03, merging EOD Friday regardless of CI status. Escalated by GlobalRetail (Gong gong-00007)."
+}

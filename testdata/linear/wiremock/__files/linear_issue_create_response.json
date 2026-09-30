@@ -1,0 +1,13 @@
+{
+  "data": {
+    "issueCreate": {
+      "success": true,
+      "issue": {
+        "id": "issue-new-0001",
+        "identifier": "ENG-999",
+        "title": "Issue created (mock)",
+        "url": "https://linear.app/acme/issue/ENG-999"
+      }
+    }
+  }
+}

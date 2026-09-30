@@ -1,0 +1,31 @@
+{
+  "request": {
+    "method": "POST",
+    "urlPathPattern": "/rest/api/3/issue/[A-Z]+-\\d+/comment"
+  },
+  "response": {
+    "status": 201,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "jsonBody": {
+      "id": "10500",
+      "author": {
+        "displayName": "Delegate Bot",
+        "accountId": "acc-delegate"
+      },
+      "body": {
+        "type": "doc",
+        "version": 1,
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [{ "type": "text", "text": "Comment added (mock response)." }]
+          }
+        ]
+      },
+      "created": "2026-03-10T12:00:00.000+0000",
+      "updated": "2026-03-10T12:00:00.000+0000"
+    }
+  }
+}

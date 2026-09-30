@@ -1,0 +1,79 @@
+{
+  "object": "list",
+  "results": [
+    {
+      "object": "block",
+      "id": "block-0001",
+      "type": "heading_1",
+      "has_children": false,
+      "heading_1": {
+        "rich_text": [{ "type": "text", "text": { "content": "PRD: User Onboarding Redesign" } }]
+      }
+    },
+    {
+      "object": "block",
+      "id": "block-0002",
+      "type": "paragraph",
+      "has_children": false,
+      "paragraph": {
+        "rich_text": [{ "type": "text", "text": { "content": "Redesign the new-user activation flow to reduce drop-off at the profile setup step (currently ~40% based on Gong call gong-00001 with Acme Corp)." } }]
+      }
+    },
+    {
+      "object": "block",
+      "id": "block-0003",
+      "type": "heading_2",
+      "has_children": false,
+      "heading_2": {
+        "rich_text": [{ "type": "text", "text": { "content": "Scope" } }]
+      }
+    },
+    {
+      "object": "block",
+      "id": "block-0004",
+      "type": "bulleted_list_item",
+      "has_children": false,
+      "bulleted_list_item": {
+        "rich_text": [{ "type": "text", "text": { "content": "Welcome screen (DEV-42 sub-task)" } }]
+      }
+    },
+    {
+      "object": "block",
+      "id": "block-0005",
+      "type": "bulleted_list_item",
+      "has_children": false,
+      "bulleted_list_item": {
+        "rich_text": [{ "type": "text", "text": { "content": "Profile setup with skip option — name+email required, rest optional" } }]
+      }
+    },
+    {
+      "object": "block",
+      "id": "block-0006",
+      "type": "bulleted_list_item",
+      "has_children": false,
+      "bulleted_list_item": {
+        "rich_text": [{ "type": "text", "text": { "content": "Team invite flow + email template" } }]
+      }
+    },
+    {
+      "object": "block",
+      "id": "block-0007",
+      "type": "heading_2",
+      "has_children": false,
+      "heading_2": {
+        "rich_text": [{ "type": "text", "text": { "content": "Dependencies & Risks" } }]
+      }
+    },
+    {
+      "object": "block",
+      "id": "block-0008",
+      "type": "paragraph",
+      "has_children": false,
+      "paragraph": {
+        "rich_text": [{ "type": "text", "text": { "content": "Mobile rollout blocked on DEV-34 deep link fix. GlobalRetail escalated on gong-00007. PR #190 merges EOD Friday regardless of CI per team commitment." } }]
+      }
+    }
+  ],
+  "next_cursor": null,
+  "has_more": false
+}

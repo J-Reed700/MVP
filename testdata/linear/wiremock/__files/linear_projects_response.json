@@ -1,0 +1,48 @@
+{
+  "data": {
+    "projects": {
+      "nodes": [
+        {
+          "id": "proj-onboarding",
+          "name": "Onboarding Redesign",
+          "description": "Full activation flow redesign. Ships v2.2.0. Mobile rollout gated on DEV-34.",
+          "progress": 0.7,
+          "state": "started",
+          "startDate": "2026-02-10",
+          "targetDate": "2026-03-29",
+          "lead": { "name": "Alice Chen" }
+        },
+        {
+          "id": "proj-api-v2",
+          "name": "API v2 Launch",
+          "description": "Kong gateway, URL-based versioning, OpenAPI spec, backward-compat v1 proxy.",
+          "progress": 0.55,
+          "state": "started",
+          "startDate": "2026-02-15",
+          "targetDate": "2026-04-15",
+          "lead": { "name": "Bob Park" }
+        },
+        {
+          "id": "proj-deep-link",
+          "name": "Mobile Deep Link Fix",
+          "description": "BLOCKER. Android 14 + iOS universal link. GlobalRetail escalated (gong-00007).",
+          "progress": 0.85,
+          "state": "started",
+          "startDate": "2026-03-01",
+          "targetDate": "2026-03-13",
+          "lead": { "name": "Eve Zhang" }
+        },
+        {
+          "id": "proj-dark-mode",
+          "name": "Dark Mode",
+          "description": "Design-token theme system. Eng starts Sprint 13. Beta mid-April.",
+          "progress": 0.2,
+          "state": "started",
+          "startDate": "2026-03-01",
+          "targetDate": "2026-04-20",
+          "lead": { "name": "Diana Wu" }
+        }
+      ]
+    }
+  }
+}
