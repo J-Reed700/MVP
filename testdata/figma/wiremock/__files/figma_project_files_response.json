@@ -1,0 +1,23 @@
+{
+  "name": "Acme Product",
+  "files": [
+    {
+      "key": "abc123XYZ",
+      "name": "Onboarding Flow v3",
+      "thumbnail_url": "https://figma-mock/thumb/abc123XYZ.png",
+      "last_modified": "2026-03-10T14:45:00Z"
+    },
+    {
+      "key": "dark123MODE",
+      "name": "Dark Mode Component Library",
+      "thumbnail_url": "https://figma-mock/thumb/dark123MODE.png",
+      "last_modified": "2026-03-08T17:00:00Z"
+    },
+    {
+      "key": "dash123XY",
+      "name": "Dashboard Redesign",
+      "thumbnail_url": "https://figma-mock/thumb/dash123XY.png",
+      "last_modified": "2026-03-05T11:00:00Z"
+    }
+  ]
+}

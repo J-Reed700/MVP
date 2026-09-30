@@ -47,9 +47,33 @@ impl Workspace {
         self.load("INTENTS.md").await
     }
 
+    /// Load OPERATIONS.md — how the team runs (cadence, intake, DoD, tool-of-record).
+    pub async fn operations(&self) -> String {
+        self.load("OPERATIONS.md").await
+    }
+
+    /// Load PLAYBOOKS.md — what to do when (stale tickets, escalations, bad news).
+    pub async fn playbooks(&self) -> String {
+        self.load("PLAYBOOKS.md").await
+    }
+
     /// Load MEMORY.md
     pub async fn memory(&self) -> String {
         self.load("MEMORY.md").await
+    }
+
+    /// True if the workspace has no IDENTITY.md body — signals bootstrap needed.
+    pub async fn is_unconfigured(&self) -> bool {
+        let identity = self.identity().await;
+        // Strip whitespace and common placeholder markers
+        let meaningful = identity
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                !t.is_empty() && !t.starts_with('#') && !t.starts_with("<!--")
+            })
+            .count();
+        meaningful < 3
     }
 
     /// Load HEARTBEAT.md and extract watched channels.

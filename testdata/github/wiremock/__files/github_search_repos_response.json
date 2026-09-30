@@ -1,0 +1,26 @@
+{
+  "total_count": 2,
+  "incomplete_results": false,
+  "items": [
+    {
+      "id": 101,
+      "name": "product",
+      "full_name": "acme/product",
+      "html_url": "https://github.com/acme/product",
+      "description": "Acme product monorepo — onboarding, API v2, dashboard, mobile.",
+      "default_branch": "main",
+      "open_issues_count": 42,
+      "updated_at": "2026-03-10T14:45:00Z"
+    },
+    {
+      "id": 102,
+      "name": "delegate-bot",
+      "full_name": "acme/delegate-bot",
+      "html_url": "https://github.com/acme/delegate-bot",
+      "description": "Internal PM assistant bot.",
+      "default_branch": "main",
+      "open_issues_count": 3,
+      "updated_at": "2026-03-10T12:00:00Z"
+    }
+  ]
+}

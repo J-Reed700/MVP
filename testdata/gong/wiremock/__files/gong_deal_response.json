@@ -1,0 +1,18 @@
+{
+  "requestId": "req-deal-001",
+  "deals": [
+    {
+      "id": "deal-globalretail",
+      "name": "GlobalRetail — annual renewal",
+      "accountName": "GlobalRetail",
+      "accountId": "acct-globalretail",
+      "stage": "at_risk",
+      "amount": 420000,
+      "currency": "USD",
+      "renewalDate": "2026-05-15",
+      "owner": { "name": "Carlos Rivera", "email": "carlos@acme.io" },
+      "lastActivityAt": "2026-03-09T21:00:00Z",
+      "notes": "At risk — DEV-34 deep link bug blocking 40k store employees. VP escalation threatened. Committed to EOD Friday merge + daily updates + post-mortem in 2 weeks. See gong-00007 transcript."
+    }
+  ]
+}

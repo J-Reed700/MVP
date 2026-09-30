@@ -1,0 +1,20 @@
+{
+  "data": {
+    "users": {
+      "nodes": [
+        { "id": "user-alice",   "name": "Alice Chen",    "email": "alice@acme.io",   "active": true },
+        { "id": "user-bob",     "name": "Bob Park",      "email": "bob@acme.io",     "active": true },
+        { "id": "user-carlos",  "name": "Carlos Rivera", "email": "carlos@acme.io",  "active": true },
+        { "id": "user-diana",   "name": "Diana Wu",      "email": "diana@acme.io",   "active": true },
+        { "id": "user-eve",     "name": "Eve Zhang",     "email": "eve@acme.io",     "active": true }
+      ]
+    },
+    "teams": {
+      "nodes": [
+        { "id": "team-eng",     "name": "Engineering", "key": "ENG" },
+        { "id": "team-design",  "name": "Design",      "key": "DES" },
+        { "id": "team-product", "name": "Product",     "key": "PROD" }
+      ]
+    }
+  }
+}

@@ -1,23 +1,189 @@
 {
   "callTranscripts": [
     {
-      "callId": "gong001",
+      "callId": "gong-00001",
+      "metadata": {
+        "title": "Acme Corp — onboarding activation check-in",
+        "date": "2026-03-03T01:01:00Z",
+        "participants": ["Bob Park (Delegate)", "Jane Smith (Acme Corp)"],
+        "sentiment": "positive",
+        "outcome": "expansion"
+      },
       "transcript": [
-        { "speakerId": "sp1", "topic": "Introduction", "sentences": [
+        { "speakerId": "sp1", "speakerName": "Bob Park", "topic": "Introduction", "sentences": [
           { "start": 0.0, "end": 5.2, "text": "Thanks for joining, Jane. I wanted to check in on how onboarding is going for your team." }
         ]},
-        { "speakerId": "sp2", "topic": "Onboarding Issues", "sentences": [
+        { "speakerId": "sp2", "speakerName": "Jane Smith", "topic": "Onboarding Issues", "sentences": [
           { "start": 5.5, "end": 15.0, "text": "Honestly, we're seeing about 40% of our users drop off at the profile setup step. It asks for too much information upfront." },
           { "start": 15.2, "end": 22.0, "text": "Also, the password reset deep links aren't working on our Android 14 devices. That's a blocker for our rollout." }
         ]},
-        { "speakerId": "sp1", "topic": "Remediation", "sentences": [
+        { "speakerId": "sp1", "speakerName": "Bob Park", "topic": "Remediation", "sentences": [
           { "start": 22.5, "end": 35.0, "text": "We're actually redesigning the entire onboarding flow right now — Jira DEV-42. The new design in Figma has a skip option for non-essential fields. And the Android deep link bug is DEV-34, Carlos has a fix in PR #190." }
         ]},
-        { "speakerId": "sp2", "topic": "Timeline", "sentences": [
+        { "speakerId": "sp2", "speakerName": "Jane Smith", "topic": "Timeline", "sentences": [
           { "start": 35.5, "end": 42.0, "text": "That's good to hear. When can we expect the new onboarding? We have a rollout deadline end of March." }
         ]},
-        { "speakerId": "sp1", "topic": "Commitment", "sentences": [
+        { "speakerId": "sp1", "speakerName": "Bob Park", "topic": "Commitment", "sentences": [
           { "start": 42.5, "end": 50.0, "text": "Design review is March 11, and Alice has the implementation in PR #189. We're targeting v2.2.0 for end of March. I'll share the Figma designs with you for early feedback." }
+        ]}
+      ]
+    },
+    {
+      "callId": "gong-00002",
+      "metadata": {
+        "title": "BigCo — dashboard performance + dark mode ask",
+        "date": "2026-03-04T15:30:00Z",
+        "participants": ["Alice Chen (Delegate)", "Tom Lee (BigCo)"],
+        "sentiment": "neutral",
+        "outcome": "stabilizing"
+      },
+      "transcript": [
+        { "speakerId": "sp1", "speakerName": "Alice Chen", "topic": "Check-in", "sentences": [
+          { "start": 0.0, "end": 6.0, "text": "Tom, thanks for the time. You mentioned dashboard performance issues — walk me through what you're seeing." }
+        ]},
+        { "speakerId": "sp2", "speakerName": "Tom Lee", "topic": "Performance Complaint", "sentences": [
+          { "start": 6.5, "end": 18.0, "text": "Our analytics team loads dashboards with 50k+ data points daily. Rendering takes 8-10 seconds and the page locks up. It's been getting worse over the last month." },
+          { "start": 18.5, "end": 25.0, "text": "Also — we've had three separate requests for a dark mode option. Our analysts stare at these dashboards 6 hours a day. Eye strain is real." }
+        ]},
+        { "speakerId": "sp1", "speakerName": "Alice Chen", "topic": "Engineering Response", "sentences": [
+          { "start": 25.5, "end": 40.0, "text": "The chart rendering work is already scoped — DEV-55 covers dashboard rendering optimization alongside dark mode theming. Linear ENG-114 tracks the virtualization piece. Eve is leading that." },
+          { "start": 40.5, "end": 48.0, "text": "Dark mode itself is in design phase right now. Figma work is tracked under our design system component library. Engineering starts Sprint 13, so probably 3-4 weeks to beta." }
+        ]},
+        { "speakerId": "sp2", "speakerName": "Tom Lee", "topic": "Renewal Concern", "sentences": [
+          { "start": 48.5, "end": 58.0, "text": "Look, I'll be honest — our renewal is in May. Leadership wants to see tangible progress on both of these. Can you send me a timeline commitment in writing?" }
+        ]},
+        { "speakerId": "sp1", "speakerName": "Alice Chen", "topic": "Commitment", "sentences": [
+          { "start": 58.5, "end": 68.0, "text": "I'll follow up with a written plan this week. Dashboard perf improvements land mid-March — you'll see them first. Dark mode beta by mid-April. I'll include the Confluence architecture doc and the Figma link." }
+        ]}
+      ]
+    },
+    {
+      "callId": "gong-00003",
+      "metadata": {
+        "title": "StartupXYZ — renewal discussion + API docs gap",
+        "date": "2026-03-05T18:00:00Z",
+        "participants": ["Carlos Rivera (Delegate)", "Mike Johnson (StartupXYZ)"],
+        "sentiment": "negative",
+        "outcome": "at_risk"
+      },
+      "transcript": [
+        { "speakerId": "sp1", "speakerName": "Carlos Rivera", "topic": "Opening", "sentences": [
+          { "start": 0.0, "end": 5.0, "text": "Mike, thanks for making time. You flagged some concerns about the renewal — let's dig in." }
+        ]},
+        { "speakerId": "sp2", "speakerName": "Mike Johnson", "topic": "Frustrations", "sentences": [
+          { "start": 5.5, "end": 18.0, "text": "Two things. First, we can't onboard new customers fast enough. Your onboarding flow is — I'm just being direct — confusing. Our CSMs spend 30 minutes on each handoff because of it." },
+          { "start": 18.5, "end": 30.0, "text": "Second, API docs. We're integrating you with our internal tooling and the docs are lagging behind the actual API. We've hit three breaking changes in two months with no advance notice." }
+        ]},
+        { "speakerId": "sp1", "speakerName": "Carlos Rivera", "topic": "Onboarding Response", "sentences": [
+          { "start": 30.5, "end": 45.0, "text": "On onboarding — that's our #1 priority right now. DEV-42 is a full redesign. Alice is leading, PR #189 merges next week. We're also adding a skip option for non-essential profile fields based on feedback like yours." },
+          { "start": 45.5, "end": 60.0, "text": "On the API docs — DEV-50 is our API v2 launch, Bob's running it. Part of that is OpenAPI-generated docs that'll stay in sync with the actual spec. Linear ENG-108 is the doc generation ticket. The backward-compat proxy means no more surprise breaking changes." }
+        ]},
+        { "speakerId": "sp2", "speakerName": "Mike Johnson", "topic": "ROI Ask", "sentences": [
+          { "start": 60.5, "end": 72.0, "text": "Fine. But I need numbers. Our contract is up May 15 and my CFO wants to see renewal ROI. What activation improvement will I see by April 1?" }
+        ]},
+        { "speakerId": "sp1", "speakerName": "Carlos Rivera", "topic": "Follow-up", "sentences": [
+          { "start": 72.5, "end": 85.0, "text": "Internal A/B tests on the new flow are showing 22% lift in day-7 activation. I'll send you the data alongside the Notion roadmap. Let's set up a renewal sync April 1 to walk through the actual results with your CSMs." }
+        ]}
+      ]
+    },
+    {
+      "callId": "gong-00004",
+      "metadata": {
+        "title": "Enterprise Co — PKCE + SSO architecture review",
+        "date": "2026-03-06T20:00:00Z",
+        "participants": ["Diana Wu (Delegate)", "Alex Tran (Enterprise Co)"],
+        "sentiment": "positive",
+        "outcome": "expansion"
+      },
+      "transcript": [
+        { "speakerId": "sp1", "speakerName": "Diana Wu", "topic": "Context", "sentences": [
+          { "start": 0.0, "end": 7.0, "text": "Alex, your security team asked about our OAuth 2.0 PKCE implementation for the onboarding flow. I have engineering on standby if we need them." }
+        ]},
+        { "speakerId": "sp2", "speakerName": "Alex Tran", "topic": "Security Requirements", "sentences": [
+          { "start": 7.5, "end": 20.0, "text": "Our CISO needs three things before we can expand seats. PKCE everywhere, SAML SSO for enterprise tier, and we want to see the architecture doc — your API v2 migration is a concern because our integrations pin specific endpoints." }
+        ]},
+        { "speakerId": "sp1", "speakerName": "Diana Wu", "topic": "Architecture Answer", "sentences": [
+          { "start": 20.5, "end": 35.0, "text": "PKCE is already live for onboarding — Linear ENG-101 shipped with PR #189. SAML SSO is roadmapped for Q2, tracked in our Notion roadmap under enterprise features." },
+          { "start": 35.5, "end": 50.0, "text": "API v2 includes a backward-compat v1 proxy so pinned endpoints keep working through 2026. Our Confluence ADR — 'API Gateway Architecture Decision Record' — has the full migration path. I'll share the link." }
+        ]},
+        { "speakerId": "sp2", "speakerName": "Alex Tran", "topic": "Expansion Signal", "sentences": [
+          { "start": 50.5, "end": 62.0, "text": "If SSO lands in Q2 and the ADR checks out with our CISO, we're looking at doubling seats in Q3. I'll send you the security review checklist and can you set up a follow-up with Bob? API v2 details matter to us." }
+        ]}
+      ]
+    },
+    {
+      "callId": "gong-00005",
+      "metadata": {
+        "title": "MidMarket Inc — onboarding + admin dashboard",
+        "date": "2026-03-07T14:00:00Z",
+        "participants": ["Eve Zhang (Delegate)", "Sara Kim (MidMarket Inc)"],
+        "sentiment": "positive",
+        "outcome": "expansion"
+      },
+      "transcript": [
+        { "speakerId": "sp1", "speakerName": "Eve Zhang", "topic": "Opening", "sentences": [
+          { "start": 0.0, "end": 5.0, "text": "Sara, thanks for the time. You wanted to talk about team management for larger teams." }
+        ]},
+        { "speakerId": "sp2", "speakerName": "Sara Kim", "topic": "Admin Dashboard Need", "sentences": [
+          { "start": 5.5, "end": 18.0, "text": "We're growing. We'll have 120 seats by June. The current admin UI — I'm being polite here — doesn't scale past 40 users. No bulk operations, no team grouping, no delegated admin." }
+        ]},
+        { "speakerId": "sp1", "speakerName": "Eve Zhang", "topic": "Product Update", "sentences": [
+          { "start": 18.5, "end": 32.0, "text": "Admin dashboard redesign is in our Q2 Notion roadmap. The team invite flow redesign — DEV-42's team invite component, Linear ENG-115 — is the first piece of that. Shipping with onboarding redesign end of March." },
+          { "start": 32.5, "end": 45.0, "text": "Bulk operations and delegated admin are Q2, but I can loop in our PM lead. Would help if you could send a written list of must-haves — we'd love to scope with your input." }
+        ]},
+        { "speakerId": "sp2", "speakerName": "Sara Kim", "topic": "Follow-up", "sentences": [
+          { "start": 45.5, "end": 55.0, "text": "Done. I'll send the list tomorrow. Also — are you doing dark mode? Half my admins asked about it." }
+        ]},
+        { "speakerId": "sp1", "speakerName": "Eve Zhang", "topic": "Close", "sentences": [
+          { "start": 55.5, "end": 65.0, "text": "Dark mode is DEV-55. Design phase now, engineering starts Sprint 13, beta mid-April. Figma component library is already being audited. I'll add you to the beta list." }
+        ]}
+      ]
+    },
+    {
+      "callId": "gong-00007",
+      "metadata": {
+        "title": "GlobalRetail — mobile deep link escalation (RENEWAL RISK)",
+        "date": "2026-03-09T21:00:00Z",
+        "participants": ["Carlos Rivera (Delegate)", "Robin Hart (GlobalRetail)"],
+        "sentiment": "negative",
+        "outcome": "at_risk"
+      },
+      "transcript": [
+        { "speakerId": "sp2", "speakerName": "Robin Hart", "topic": "Escalation", "sentences": [
+          { "start": 0.0, "end": 15.0, "text": "Carlos, I'm going to cut to it. Our mobile app can't send password reset emails that actually work on Android 14. This has been broken for two weeks. We have 40,000 store employees who can't log in." },
+          { "start": 15.5, "end": 25.0, "text": "My VP is asking me if we should pause our contract. This is the third time I've raised it and nothing has shipped." }
+        ]},
+        { "speakerId": "sp1", "speakerName": "Carlos Rivera", "topic": "Acknowledgment", "sentences": [
+          { "start": 25.5, "end": 40.0, "text": "Robin, this is unacceptable and I own it. The fix is in PR #190, tracked as DEV-34. It's been blocked on flaky CI tests — Linear ENG-102. Eve has the intent filter fix ready. We're merging by end of day Friday regardless of CI status." },
+          { "start": 40.5, "end": 55.0, "text": "I'm escalating this internally. DEV-34 is labeled as a blocker for our onboarding epic DEV-42 but the urgency for your org wasn't captured. That's on me. I'll DM you a daily update until it ships and again when customers confirm the fix works." }
+        ]},
+        { "speakerId": "sp2", "speakerName": "Robin Hart", "topic": "Conditions", "sentences": [
+          { "start": 55.5, "end": 65.0, "text": "I appreciate the directness. If the fix doesn't ship this week, I will escalate to your CEO. Daily updates, confirmation the fix works in production, and a post-mortem within two weeks. Those are my terms." }
+        ]},
+        { "speakerId": "sp1", "speakerName": "Carlos Rivera", "topic": "Commitment", "sentences": [
+          { "start": 65.5, "end": 75.0, "text": "Agreed on all three. I'll send the Confluence post-mortem template so you know what's coming. Thanks for not giving up on us." }
+        ]}
+      ]
+    },
+    {
+      "callId": "gong-00008",
+      "metadata": {
+        "title": "HealthTech — dark mode accessibility + theming",
+        "date": "2026-03-10T17:00:00Z",
+        "participants": ["Diana Wu (Delegate)", "Sam Costa (HealthTech)"],
+        "sentiment": "positive",
+        "outcome": "expansion"
+      },
+      "transcript": [
+        { "speakerId": "sp2", "speakerName": "Sam Costa", "topic": "Accessibility Context", "sentences": [
+          { "start": 0.0, "end": 15.0, "text": "Diana, our clinical users include folks with light sensitivity. Dark mode isn't a preference for us — it's an accessibility requirement. Where is that on your roadmap?" }
+        ]},
+        { "speakerId": "sp1", "speakerName": "Diana Wu", "topic": "Roadmap Answer", "sentences": [
+          { "start": 15.5, "end": 30.0, "text": "DEV-55 is our dark mode epic. Design phase right now. We're building a full theme system with design tokens — not just inverted colors — which matters for accessibility because we need proper contrast ratios and not-just-dark charts." },
+          { "start": 30.5, "end": 42.0, "text": "Figma component audit is under way. Engineering starts Sprint 13 and beta is mid-April. I'd love to have HealthTech in the beta — your accessibility feedback would directly shape the final." }
+        ]},
+        { "speakerId": "sp2", "speakerName": "Sam Costa", "topic": "Beta Sign-up", "sentences": [
+          { "start": 42.5, "end": 55.0, "text": "Sign me up. Also — if you can prioritize WCAG AA contrast in the chart palette specifically, that's what gets us through our compliance review. Let me know how I can help." }
         ]}
       ]
     }

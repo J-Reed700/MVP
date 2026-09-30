@@ -1,0 +1,17 @@
+{
+  "request": {
+    "method": "POST",
+    "urlPath": "/rest/api/3/issue"
+  },
+  "response": {
+    "status": 201,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "jsonBody": {
+      "id": "10999",
+      "key": "DEV-999",
+      "self": "https://acme.atlassian.net/rest/api/3/issue/10999"
+    }
+  }
+}

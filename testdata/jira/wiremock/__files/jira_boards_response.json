@@ -1,0 +1,19 @@
+{
+  "maxResults": 10,
+  "startAt": 0,
+  "total": 1,
+  "isLast": true,
+  "values": [
+    {
+      "id": 1,
+      "self": "https://acme.atlassian.net/rest/agile/1.0/board/1",
+      "name": "Product Development Scrum Board",
+      "type": "scrum",
+      "location": {
+        "projectId": 10000,
+        "projectKey": "DEV",
+        "projectName": "Product Development"
+      }
+    }
+  ]
+}

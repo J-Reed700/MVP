@@ -1,0 +1,21 @@
+{
+  "priority": 2,
+  "request": {
+    "method": "POST",
+    "urlPathPattern": "/repos/[^/]+/[^/]+/issues"
+  },
+  "response": {
+    "status": 201,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": {
+      "id": 9999,
+      "number": 999,
+      "state": "open",
+      "title": "Issue created (mock)",
+      "html_url": "https://github.com/acme/product/issues/999",
+      "user": { "login": "delegate-bot" },
+      "created_at": "2026-03-10T12:00:00Z",
+      "updated_at": "2026-03-10T12:00:00Z"
+    }
+  }
+}

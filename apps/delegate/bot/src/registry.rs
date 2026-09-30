@@ -306,6 +306,17 @@ static REGISTRY: &[ToolEntry] = &[
         is_reply: false,
         schema_fn: schema_integration_status,
     },
+    ToolEntry {
+        name: "complete_onboarding",
+        description: "Mark bootstrap onboarding as complete and switch to normal operation. ONLY available during the Validating stage of bootstrap.",
+        scope: ToolScope::Event,
+        tier: ActionTier::Autonomous,
+        frequency: Frequency::WhenRelevant,
+        when: "Call this ONLY during the bootstrap validation check-in, and ONLY when the team lead has explicitly confirmed the summary looks right (e.g. 'looks good', 'you got it', 'that's accurate', 'ship it'). Clarifying questions ('what do you mean by X?') or corrections ('actually Marcus is on backend not frontend') are NOT confirmations — answer them first and wait for explicit sign-off. Do not call this tool outside the bootstrap flow — it does nothing.",
+        is_information: false,
+        is_reply: false,
+        schema_fn: schema_complete_onboarding,
+    },
 ];
 
 // ── Derived functions ──────────────────────────────────────────────────
@@ -484,6 +495,26 @@ fn schema_no_action() -> Value {
                     }
                 },
                 "required": ["reason"]
+            }
+        }
+    })
+}
+
+fn schema_complete_onboarding() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "complete_onboarding",
+            "description": "Mark bootstrap onboarding complete. Call ONLY during the validation stage and ONLY after the team lead has explicitly confirmed the summary is accurate.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "confirmation_quote": {
+                        "type": "string",
+                        "description": "The exact words the team lead used to confirm (e.g. 'looks right', 'ship it'). Do not fabricate this — quote their message."
+                    }
+                },
+                "required": ["confirmation_quote"]
             }
         }
     })

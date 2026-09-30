@@ -1,0 +1,9 @@
+{
+  "request": {
+    "method": "PUT",
+    "urlPathPattern": "/rest/api/3/issue/[A-Z]+-\\d+/assignee"
+  },
+  "response": {
+    "status": 204
+  }
+}

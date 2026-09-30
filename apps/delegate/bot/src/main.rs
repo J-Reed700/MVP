@@ -1,10 +1,13 @@
 mod approval;
+mod bootstrap;
 mod budget;
 mod context;
 mod db;
+mod deepening;
 mod dynamic_registry;
 mod event;
 mod heartbeat;
+mod ingestion;
 mod logger;
 mod messenger;
 mod models;
@@ -30,6 +33,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use bootstrap::{BootstrapCoordinator, BootstrapStage};
 use budget::TokenBudget;
 use context::TaskType;
 use db::Db;
@@ -54,6 +58,10 @@ struct Config {
     model: Option<String>,
     workspace_path: String,
     database_url: Option<String>,
+    /// Optional pinned approver Slack user ID. When set, ONLY this user can
+    /// trigger bootstrap — the explicit 'onboard' command from any other
+    /// user is rejected.
+    bootstrap_approver: Option<String>,
 }
 
 impl Config {
@@ -66,6 +74,10 @@ impl Config {
         let workspace_path =
             std::env::var("DELEGATE_WORKSPACE").unwrap_or_else(|_| "./workspace".to_string());
         let database_url = std::env::var("DELEGATE_DATABASE_URL").ok();
+        let bootstrap_approver = std::env::var("DELEGATE_BOOTSTRAP_APPROVER")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.trim().to_string());
 
         Ok(Self {
             transport,
@@ -73,6 +85,7 @@ impl Config {
             model,
             workspace_path,
             database_url,
+            bootstrap_approver,
         })
     }
 }
@@ -125,6 +138,15 @@ async fn main() -> Result<()> {
     credential_store.load_all().await;
     let connected_providers = credential_store.connected_providers().await;
 
+    // Load bootstrap state. An unconfigured workspace (no IDENTITY.md body)
+    // with no persisted state means we need to onboard on first contact.
+    let bootstrap_coord = BootstrapCoordinator::load(db.clone(), ws.clone()).await?;
+    info!(
+        stage = %bootstrap_coord.stage().await.as_str(),
+        unconfigured = ws.is_unconfigured().await,
+        "Bootstrap state loaded"
+    );
+
     let dynamic_registry = Arc::new(DynamicRegistry::new());
     dynamic_registry.set_credential_store(credential_store.clone()).await;
     if connected_providers.is_empty() {
@@ -136,7 +158,7 @@ async fn main() -> Result<()> {
     }
 
     let hb_config = heartbeat::parse_config(ws.path(), &|id| transport.is_valid_user_id(id)).await;
-    let token_budget = TokenBudget::new(db.clone(), hb_config.daily_token_budget);
+    let token_budget = TokenBudget::new(db.clone(), Some(hb_config.daily_token_budget));
 
     let watched_channels = resolve_watched_channels(&ws, &*messenger).await;
     let watched_channels = Arc::new(watched_channels);
@@ -178,7 +200,11 @@ async fn main() -> Result<()> {
         let hb_validate = validate_id.clone();
         let hb_registry = dynamic_registry.clone();
         let hb_db = db.clone();
+        let hb_bootstrap = bootstrap_coord.clone();
         tokio::spawn(async move {
+            // Heartbeat is gated on bootstrap being complete — an unconfigured
+            // bot should not reason proactively.
+            wait_for_bootstrap(&hb_bootstrap).await;
             if let Err(e) =
                 run_heartbeat(&hb_ws, &hb_client, &*hb_messenger, hb_model.as_deref(), &hb_budget, &hb_validate, &hb_registry, &hb_db)
                     .await
@@ -197,13 +223,34 @@ async fn main() -> Result<()> {
         let cron_validate = validate_id.clone();
         let cron_registry = dynamic_registry.clone();
         let cron_db = db.clone();
+        let cron_bootstrap = bootstrap_coord.clone();
         tokio::spawn(async move {
+            wait_for_bootstrap(&cron_bootstrap).await;
             if let Err(e) =
                 run_cron_scheduler(&cron_ws, &cron_client, &*cron_messenger, cron_model.as_deref(), &cron_budget, &cron_validate, &cron_registry, &cron_db)
                     .await
             {
                 error!("Cron scheduler failed: {e}");
             }
+        })
+    };
+
+    // Bootstrap progression watcher: when the coordinator advances to
+    // Ingesting, spawn the ingestion worker. When it advances to Validating,
+    // post the check-in summary.
+    let bootstrap_progression_handle = {
+        let bp_coord = bootstrap_coord.clone();
+        let bp_messenger = messenger.clone();
+        let bp_db = db.clone();
+        let bp_ws = ws.clone();
+        let bp_cred = credential_store.clone();
+        let bp_client = model_client.clone();
+        let bp_model = config.model.clone();
+        tokio::spawn(async move {
+            run_bootstrap_progression(
+                bp_coord, bp_messenger, bp_db, bp_ws, bp_cred, bp_client, bp_model,
+            )
+            .await;
         })
     };
 
@@ -267,8 +314,44 @@ async fn main() -> Result<()> {
         let evt_notif_channel = notification_channel.clone();
         let evt_registry = dynamic_registry.clone();
         let evt_db = db.clone();
+        let evt_bootstrap = bootstrap_coord.clone();
+        let evt_pinned_approver = config.bootstrap_approver.clone();
 
         tokio::spawn(async move {
+            // Bootstrap intercept: while onboarding is in progress, the DM
+            // channel with the approver is owned by the coordinator. After
+            // validation, the first correction DM marks bootstrap complete.
+            match route_bootstrap_event(
+                &evt,
+                &*transport_for_event,
+                &*messenger_for_event,
+                &evt_bootstrap,
+                evt_pinned_approver.as_deref(),
+            )
+            .await
+            {
+                BootstrapRouting::Consumed => return,
+                BootstrapRouting::Deferred => {
+                    // Not in a bootstrap-owned conversation and bootstrap
+                    // isn't complete yet — log the event but don't reason.
+                    if !evt_bootstrap.is_complete().await {
+                        let channel_name = messenger_for_event
+                            .get_channel_name(evt.channel.as_str())
+                            .await;
+                        let user_name = messenger_for_event.get_user_name(evt.user.as_str()).await;
+                        let _ = logger::append_log(
+                            &evt_db,
+                            &channel_name,
+                            &user_name,
+                            &format!("[pre-bootstrap] {}", evt.content),
+                        )
+                        .await;
+                        return;
+                    }
+                }
+                BootstrapRouting::PassThrough => {}
+            }
+
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(300),
                 handle_event(
@@ -283,6 +366,7 @@ async fn main() -> Result<()> {
                     evt_notif_channel.as_ref().as_deref(),
                     &evt_registry,
                     &evt_db,
+                    &evt_bootstrap,
                 ),
             )
             .await;
@@ -300,8 +384,290 @@ async fn main() -> Result<()> {
         r = heartbeat_handle => { r?; }
         r = cron_handle => { r?; }
         r = oauth_handle => { r?; }
+        r = bootstrap_progression_handle => { r?; }
     }
     Ok(())
+}
+
+/// How an incoming event should be handled relative to the bootstrap flow.
+enum BootstrapRouting {
+    /// Bootstrap handled the event (e.g. answered a question, kicked off the
+    /// flow, accepted a correction). No further processing.
+    Consumed,
+    /// Bootstrap not complete, and the event isn't part of the bootstrap
+    /// conversation. Log only, don't reason.
+    Deferred,
+    /// Bootstrap complete (or the event is irrelevant to bootstrap). Continue
+    /// normal event handling.
+    PassThrough,
+}
+
+/// Decide whether a live event feeds the bootstrap state machine.
+///
+/// - If bootstrap is complete → PassThrough.
+/// - If this DM is the bootstrap conversation → feed the coordinator.
+/// - If no approver is set and the message is an explicit 'onboard' trigger
+///   (and, if configured, from the pinned approver) → kick off.
+/// - Otherwise → Deferred (log but don't reason).
+///
+/// `pinned_approver` is the optional `DELEGATE_BOOTSTRAP_APPROVER` env value.
+/// When set, ONLY that user ID can trigger onboarding regardless of who sends
+/// the command.
+async fn route_bootstrap_event(
+    event: &DelegateEvent,
+    transport: &dyn Transport,
+    messenger: &dyn Messenger,
+    coord: &BootstrapCoordinator,
+    pinned_approver: Option<&str>,
+) -> BootstrapRouting {
+    if coord.is_complete().await {
+        return BootstrapRouting::PassThrough;
+    }
+
+    // Ignore reactions and non-message events during bootstrap.
+    if event.event_type != "message" && event.event_type != "app_mention" && event.event_type != "im" {
+        return BootstrapRouting::Deferred;
+    }
+
+    // Never let the bot trigger its own onboarding.
+    if transport.is_self_message(event.user.as_str()) {
+        return BootstrapRouting::Deferred;
+    }
+
+    let is_dm = transport.is_dm_channel(event.channel.as_str());
+    let stage = coord.stage().await;
+
+    match stage {
+        BootstrapStage::Complete => BootstrapRouting::PassThrough,
+        BootstrapStage::Onboarding => {
+            // If no approver yet, check for an explicit 'onboard' trigger.
+            if coord.approver().await.is_none() {
+                let cleaned = transport.strip_mentions(&event.content);
+                let is_mention = transport.is_mention(&event.content);
+                let is_trigger = is_onboard_trigger(&cleaned, is_dm, is_mention);
+
+                if !is_trigger {
+                    // Not an onboard command. If the bot was mentioned or
+                    // DM'd but without the trigger word, post a hint so
+                    // users know how to start it up. Otherwise stay silent.
+                    if is_dm || is_mention {
+                        post_bootstrap_hint(messenger, event, is_dm, pinned_approver).await;
+                        return BootstrapRouting::Consumed;
+                    }
+                    return BootstrapRouting::Deferred;
+                }
+
+                // Enforce pinned approver if set.
+                if let Some(pinned) = pinned_approver {
+                    if pinned != event.user.as_str() {
+                        let msg = format!(
+                            "Onboarding is locked to a specific user (pinned via DELEGATE_BOOTSTRAP_APPROVER). \
+                             Ask <@{}> to run this.",
+                            pinned
+                        );
+                        let _ = if is_dm {
+                            messenger.send_dm(event.user.as_str(), &msg).await
+                        } else {
+                            messenger
+                                .post_message(event.channel.as_str(), &msg, event.thread_ts.as_deref())
+                                .await
+                        };
+                        info!(
+                            user = %event.user,
+                            pinned = %pinned,
+                            "Bootstrap: rejected trigger from non-pinned user"
+                        );
+                        return BootstrapRouting::Consumed;
+                    }
+                }
+
+                info!(
+                    user = %event.user,
+                    channel = %event.channel,
+                    is_dm,
+                    "Bootstrap: explicit onboard command accepted"
+                );
+                if let Err(e) = coord.kick_off(event.user.as_str(), messenger).await {
+                    error!("Bootstrap kick-off failed: {e:#}");
+                }
+                return BootstrapRouting::Consumed;
+            }
+
+            // Approver is set — route their DMs into the question flow.
+            if coord.owns_dm(event.channel.as_str()).await {
+                match coord
+                    .handle_onboarding_message(
+                        event.user.as_str(),
+                        &transport.strip_mentions(&event.content),
+                        messenger,
+                    )
+                    .await
+                {
+                    Ok(true) => BootstrapRouting::Consumed,
+                    Ok(false) => BootstrapRouting::Deferred,
+                    Err(e) => {
+                        error!("Onboarding message handling failed: {e:#}");
+                        BootstrapRouting::Deferred
+                    }
+                }
+            } else {
+                BootstrapRouting::Deferred
+            }
+        }
+        BootstrapStage::Ingesting => {
+            // Mid-ingestion: if the approver DMs us, acknowledge but don't
+            // reason. They can still add context that'll be captured later.
+            if coord.owns_dm(event.channel.as_str()).await
+                && coord.approver().await.as_deref() == Some(event.user.as_str())
+            {
+                let _ = messenger
+                    .send_dm(
+                        event.user.as_str(),
+                        "Got it — I'm still catching up on history. I'll fold this in when I check back in with you.",
+                    )
+                    .await;
+                BootstrapRouting::Consumed
+            } else {
+                BootstrapRouting::Deferred
+            }
+        }
+        BootstrapStage::Validating => {
+            // Validating: the approver's reply is a real conversational turn.
+            // It may be a clarifying question, a correction, or explicit
+            // sign-off. We pass it through to normal event handling so the
+            // model can respond — and rely on the `complete_onboarding` tool
+            // to advance the state machine once (and only once) the team
+            // lead explicitly confirms the summary.
+            let approver_match = coord.approver().await.as_deref() == Some(event.user.as_str());
+            if coord.owns_dm(event.channel.as_str()).await && approver_match {
+                BootstrapRouting::PassThrough
+            } else {
+                BootstrapRouting::Deferred
+            }
+        }
+    }
+}
+
+/// True if a message is an explicit onboard trigger.
+///
+/// Accepted forms:
+/// - In a DM: the word "onboard" on its own (case-insensitive), possibly with
+///   a leading slash ("onboard", "/onboard").
+/// - In any channel: "@Delegate onboard" (the mention is stripped upstream
+///   so we see just the word, but we require `is_mention` to prevent drive-by
+///   triggers from casual references).
+///
+/// We deliberately reject looser phrasings ("can you onboard me?", "it's time
+/// to onboard the team") so the trigger is unambiguous.
+fn is_onboard_trigger(cleaned_content: &str, is_dm: bool, is_mention: bool) -> bool {
+    let c = cleaned_content.trim().trim_start_matches('/').trim();
+    let lower = c.to_lowercase();
+    let matches = lower == "onboard" || lower == "delegate onboard" || lower == "onboard me";
+    if !matches {
+        return false;
+    }
+    // In a public channel the bot must be explicitly mentioned; in a DM the
+    // is_dm flag is sufficient.
+    is_dm || is_mention
+}
+
+/// Post a one-liner explaining how to trigger onboarding. Used when someone
+/// DMs or @-mentions the bot while it's still unconfigured.
+async fn post_bootstrap_hint(
+    messenger: &dyn Messenger,
+    event: &DelegateEvent,
+    is_dm: bool,
+    pinned_approver: Option<&str>,
+) {
+    let base = "I'm not onboarded yet. To get me set up, say `onboard` in a DM \
+                 or `@Delegate onboard` in a channel. It's a ~10 minute flow.";
+    let msg = match pinned_approver {
+        Some(u) => format!("{} (Onboarding is locked to <@{}> via server config.)", base, u),
+        None => base.to_string(),
+    };
+    let _ = if is_dm {
+        messenger.send_dm(event.user.as_str(), &msg).await
+    } else {
+        messenger
+            .post_message(event.channel.as_str(), &msg, event.thread_ts.as_deref())
+            .await
+    };
+}
+
+/// Poll until bootstrap reaches `Complete`. Used to gate the heartbeat and
+/// cron loops so an unconfigured bot stays quiet.
+async fn wait_for_bootstrap(coord: &BootstrapCoordinator) {
+    loop {
+        if coord.is_complete().await {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    }
+}
+
+/// Watch bootstrap state transitions. Kicks off the ingestion worker when we
+/// enter `Ingesting`, and posts the check-in summary when we enter
+/// `Validating`.
+async fn run_bootstrap_progression(
+    coord: Arc<BootstrapCoordinator>,
+    messenger: Arc<dyn Messenger>,
+    db: Db,
+    ws: Workspace,
+    credential_store: Arc<oauth::CredentialStore>,
+    client: ModelClient,
+    model_override: Option<String>,
+) {
+    let mut last_stage = BootstrapStage::Onboarding;
+    let mut ingestion_spawned = false;
+
+    loop {
+        let stage = coord.stage().await;
+
+        if stage != last_stage {
+            info!(from = last_stage.as_str(), to = stage.as_str(), "Bootstrap stage changed");
+            last_stage = stage;
+        }
+
+        match stage {
+            BootstrapStage::Ingesting if !ingestion_spawned => {
+                ingestion_spawned = true;
+                let ing_coord = coord.clone();
+                let ing_messenger = messenger.clone();
+                let ing_db = db.clone();
+                let ing_ws = ws.clone();
+                let ing_cred = credential_store.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = ingestion::run(
+                        ing_coord, ing_messenger, ing_db, ing_ws, ing_cred,
+                    )
+                    .await
+                    {
+                        error!("Ingestion worker failed: {e:#}");
+                    }
+                });
+            }
+            BootstrapStage::Validating => {
+                let recent_logs = logger::read_recent_logs(&db).await;
+                if let Err(e) = bootstrap::post_validation_summary(
+                    &coord,
+                    &client,
+                    &*messenger,
+                    model_override.as_deref(),
+                    &recent_logs,
+                )
+                .await
+                {
+                    error!("Validation summary failed: {e:#}");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                continue;
+            }
+            BootstrapStage::Complete => return,
+            _ => {}
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
 }
 
 async fn resolve_watched_channels(
@@ -356,7 +722,7 @@ async fn notify_budget_exhausted(
 // ── Event handler ──────────────────────────────────────────────────────
 
 #[tracing::instrument(
-    skip(transport, messenger_arc, client, ws, budget, watched_channels, notification_channel, dynamic_registry, db),
+    skip(transport, messenger_arc, client, ws, budget, watched_channels, notification_channel, dynamic_registry, db, bootstrap_coord),
     fields(
         channel = %event.channel,
         user = %event.user,
@@ -377,6 +743,7 @@ async fn handle_event(
     notification_channel: Option<&str>,
     dynamic_registry: &DynamicRegistry,
     db: &Db,
+    bootstrap_coord: &BootstrapCoordinator,
 ) -> Result<()> {
     let messenger: &dyn Messenger = &*messenger_arc;
     let event_start = std::time::Instant::now();
@@ -417,12 +784,44 @@ async fn handle_event(
         event.user, event.timestamp
     );
 
-    let (system_prompt, mut user_prompt) = context::to_prompt(&compiled, ToolScope::Event);
+    let (mut system_prompt, mut user_prompt) = context::to_prompt(&compiled, ToolScope::Event);
     if !thread_context.is_empty() {
         user_prompt = format!("{thread_context}\n\n---\nNew message:\n{user_prompt}");
     }
 
-    let tools = dynamic_registry.tool_schemas(ToolScope::Event).await;
+    // Validating-stage guidance: the team lead is reviewing the onboarding
+    // check-in summary. Their reply is either a clarifying question, a
+    // correction, or explicit sign-off. Only `complete_onboarding` advances
+    // state — do NOT call it on ambiguous replies.
+    if matches!(bootstrap_coord.stage().await, BootstrapStage::Validating) {
+        system_prompt.push_str(
+            "\n\n# Bootstrap: Validation Stage\n\n\
+            You are mid-onboarding. You just sent the team lead a 'here's what I think is happening' summary. \
+            Their message is one of three things:\n\n\
+            1. **A clarifying question** (\"what did you mean by X?\"): answer it — do NOT call complete_onboarding.\n\
+            2. **A correction** (\"actually Marcus is on backend, not frontend\"): \
+               update IDENTITY.md / INTENTS.md / OPERATIONS.md using save_memory or write_file, \
+               acknowledge the correction, ask if there's anything else to fix. Do NOT call complete_onboarding yet.\n\
+            3. **Explicit sign-off** (\"looks right\", \"that's accurate\", \"you got it\", \"ship it\"): \
+               call `complete_onboarding` with the exact confirmation quote. Then post a short \
+               'switching to normal operation now' reply.\n\n\
+            If you're uncertain which bucket the message falls into, treat it as a correction or clarifying question. \
+            Better to stay in validation one turn too long than to prematurely exit.",
+        );
+    }
+
+    let mut tools = dynamic_registry.tool_schemas(ToolScope::Event).await;
+    // `complete_onboarding` is ONLY exposed during the Validating stage.
+    // Outside that window it's dead weight (and potentially confusing) so we
+    // filter it out of the tool list the model sees.
+    if !matches!(bootstrap_coord.stage().await, BootstrapStage::Validating) {
+        tools.retain(|t| {
+            t.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                != Some("complete_onboarding")
+        });
+    }
     let model = model_override.map(|s| s.to_string());
 
     // Stream the initial LLM call with progressive Slack updates
@@ -468,7 +867,14 @@ async fn handle_event(
     let initial_streamed = !response.tool_calls.is_empty() || !streamed_text.trim().is_empty();
 
     let hb_config = heartbeat::parse_config(ws.path(), &|id| transport.is_valid_user_id(id)).await;
-    let ctx = ToolContext { messenger, ws, event: &event, thread_ts, db };
+    let ctx = ToolContext {
+        messenger,
+        ws,
+        event: &event,
+        thread_ts,
+        db,
+        bootstrap: Some(bootstrap_coord),
+    };
 
     let (final_content, has_reply, action_summaries, silent_actions, loop_tokens) =
         run_event_tool_loop(
@@ -959,7 +1365,11 @@ async fn process_heartbeat_batch(
         Err(e) => { warn!("Heartbeat context assembly failed: {e}"); return; }
     };
 
-    let (system, prompt) = context::to_prompt(&compiled, ToolScope::Heartbeat);
+    let (mut system, prompt) = context::to_prompt(&compiled, ToolScope::Heartbeat);
+    // Wave 2: teach the heartbeat model to ask targeted clarifiers so the
+    // team profile deepens over time instead of being frozen at bootstrap.
+    system.push_str("\n\n");
+    system.push_str(deepening::DEEPENING_PROMPT);
     let hb_tools = registry::heartbeat_tool_schemas();
 
     let response = match client.complete(CompleteOptions {

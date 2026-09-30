@@ -1,0 +1,13 @@
+{
+  "data": {
+    "issueUpdate": {
+      "success": true,
+      "issue": {
+        "id": "issue-updated-0001",
+        "identifier": "ENG-999",
+        "title": "Issue updated (mock)",
+        "state": { "name": "In Progress" }
+      }
+    }
+  }
+}

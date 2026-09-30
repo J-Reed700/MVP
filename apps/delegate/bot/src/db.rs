@@ -91,6 +91,31 @@ impl Db {
             );
             CREATE INDEX IF NOT EXISTS idx_reminders_fire
                 ON reminders (fire_at) WHERE NOT fired;
+
+            -- Bootstrap state: singleton row tracking onboarding progress.
+            -- stage: onboarding | ingesting | validating | complete
+            CREATE TABLE IF NOT EXISTS bootstrap_state (
+                id              INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+                stage           TEXT    NOT NULL DEFAULT 'onboarding',
+                approver_user   TEXT,
+                dm_channel      TEXT,
+                current_step    INTEGER NOT NULL DEFAULT 0,
+                answers         JSONB   NOT NULL DEFAULT '{}',
+                ingestion_progress JSONB NOT NULL DEFAULT '{}',
+                started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                completed_at    TIMESTAMPTZ
+            );
+
+            -- Wave 2 deepening: tracks which clarifiers have been asked so
+            -- we don't re-pester the team. Keyed by a clarifier_key the agent
+            -- generates (e.g. "owner:marcus", "cadence:sprint-review").
+            CREATE TABLE IF NOT EXISTS deepening_asked (
+                clarifier_key TEXT        PRIMARY KEY,
+                asked_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                answered      BOOLEAN     NOT NULL DEFAULT FALSE,
+                answered_at   TIMESTAMPTZ
+            );
             "#,
         )
         .execute(&self.pool)
@@ -443,6 +468,88 @@ impl Db {
             .await?;
         Ok(())
     }
+
+    // ── Bootstrap State ────────────────────────────────────────────────
+
+    pub async fn load_bootstrap_state(&self) -> Result<Option<super::bootstrap::BootstrapState>> {
+        let row = sqlx::query_as::<_, BootstrapRow>(
+            r#"
+            SELECT stage, approver_user, dm_channel, current_step,
+                   answers, ingestion_progress, started_at, updated_at, completed_at
+            FROM bootstrap_state
+            WHERE id = 1
+            "#,
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.into_state()))
+    }
+
+    // ── Deepening (Wave 2) ─────────────────────────────────────────────
+
+    /// True if we've never asked this clarifier.
+    #[allow(dead_code)]
+    pub async fn deepening_is_new(&self, clarifier_key: &str) -> Result<bool> {
+        let exists: Option<bool> = sqlx::query_scalar(
+            "SELECT TRUE FROM deepening_asked WHERE clarifier_key = $1",
+        )
+        .bind(clarifier_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(exists.is_none())
+    }
+
+    /// Record that a clarifier was asked.
+    #[allow(dead_code)]
+    pub async fn deepening_record_asked(&self, clarifier_key: &str) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO deepening_asked (clarifier_key)
+            VALUES ($1)
+            ON CONFLICT (clarifier_key) DO NOTHING
+            "#,
+        )
+        .bind(clarifier_key)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn save_bootstrap_state(&self, state: &super::bootstrap::BootstrapState) -> Result<()> {
+        let completed_at = state
+            .completed_at
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc));
+
+        sqlx::query(
+            r#"
+            INSERT INTO bootstrap_state (
+                id, stage, approver_user, dm_channel, current_step,
+                answers, ingestion_progress, updated_at, completed_at
+            ) VALUES (1, $1, $2, $3, $4, $5, $6, NOW(), $7)
+            ON CONFLICT (id) DO UPDATE SET
+                stage              = $1,
+                approver_user      = $2,
+                dm_channel         = $3,
+                current_step       = $4,
+                answers            = $5,
+                ingestion_progress = $6,
+                updated_at         = NOW(),
+                completed_at       = $7
+            "#,
+        )
+        .bind(state.stage.as_str())
+        .bind(&state.approver_user)
+        .bind(&state.dm_channel)
+        .bind(state.current_step as i32)
+        .bind(&state.answers)
+        .bind(&state.ingestion_progress)
+        .bind(completed_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 // ── Row types for sqlx ─────────────────────────────────────────────────
@@ -523,6 +630,35 @@ pub struct ReminderRow {
     pub username: String,
     pub message: String,
     pub fire_at: DateTime<Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+struct BootstrapRow {
+    stage: String,
+    approver_user: Option<String>,
+    dm_channel: Option<String>,
+    current_step: i32,
+    answers: Value,
+    ingestion_progress: Value,
+    #[allow(dead_code)]
+    started_at: DateTime<Utc>,
+    #[allow(dead_code)]
+    updated_at: DateTime<Utc>,
+    completed_at: Option<DateTime<Utc>>,
+}
+
+impl BootstrapRow {
+    fn into_state(self) -> super::bootstrap::BootstrapState {
+        super::bootstrap::BootstrapState {
+            stage: super::bootstrap::BootstrapStage::from_str(&self.stage),
+            approver_user: self.approver_user,
+            dm_channel: self.dm_channel,
+            current_step: self.current_step.max(0) as usize,
+            answers: self.answers,
+            ingestion_progress: self.ingestion_progress,
+            completed_at: self.completed_at.map(|dt| dt.with_timezone(&Local).to_rfc3339()),
+        }
+    }
 }
 
 fn approval_state_str(state: &super::approval::ApprovalState) -> &'static str {

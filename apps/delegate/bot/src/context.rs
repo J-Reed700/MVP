@@ -56,6 +56,8 @@ pub enum TaskType {
 pub struct CompiledContext {
     pub identity: String,
     pub intents: String,
+    pub operations: String,
+    pub playbooks: String,
     pub heartbeat: String,
     pub memory: String,
     pub skills: Vec<Skill>,
@@ -89,6 +91,8 @@ pub async fn compile(
     // 1. Load always-on files (tiers 1-2: never cut)
     let identity = load_file(&workspace.join("IDENTITY.md")).await;
     let intents = load_file(&workspace.join("INTENTS.md")).await;
+    let operations = load_file(&workspace.join("OPERATIONS.md")).await;
+    let playbooks = load_file(&workspace.join("PLAYBOOKS.md")).await;
     let heartbeat = load_file(&workspace.join("HEARTBEAT.md")).await;
     let skills = load_skills(&workspace.join("skills"), None).await;
 
@@ -109,6 +113,8 @@ pub async fn compile(
     let skills_text: String = skills.iter().map(|s| format!("- {}: {}", s.name, s.description)).collect::<Vec<_>>().join("\n");
     let protected_tokens = estimate_tokens(&identity)
         + estimate_tokens(&intents)
+        + estimate_tokens(&operations)
+        + estimate_tokens(&playbooks)
         + estimate_tokens(&heartbeat)
         + estimate_tokens(&framing)
         + estimate_tokens(&trigger)
@@ -158,6 +164,8 @@ pub async fn compile(
     Ok(CompiledContext {
         identity,
         intents,
+        operations,
+        playbooks,
         heartbeat,
         memory,
         skills,
@@ -202,6 +210,16 @@ pub fn to_prompt(ctx: &CompiledContext, scope: ToolScope) -> (String, String) {
     // Priority 2: Intents (never cut)
     if !ctx.intents.is_empty() {
         system_parts.push(format!("\n# Active Intents\n{}", ctx.intents));
+    }
+
+    // How the team runs — cadence, intake, DoD, tool-of-record (never cut)
+    if !ctx.operations.is_empty() {
+        system_parts.push(format!("\n# How This Team Operates\n{}", ctx.operations));
+    }
+
+    // What to do when — stale tickets, escalations, bad news (never cut)
+    if !ctx.playbooks.is_empty() {
+        system_parts.push(format!("\n# Playbooks\n{}", ctx.playbooks));
     }
 
     // Operational config (never cut)

@@ -1,0 +1,56 @@
+{
+  "data": {
+    "team": {
+      "activeCycle": {
+        "id": "cycle-sprint-12",
+        "name": "Sprint 12",
+        "number": 12,
+        "startsAt": "2026-02-24T09:00:00.000Z",
+        "endsAt": "2026-03-10T17:00:00.000Z",
+        "progress": 0.72,
+        "issueCountHistory": [12, 15, 18, 20, 22],
+        "completedIssueCountHistory": [2, 5, 8, 12, 16],
+        "issues": {
+          "nodes": [
+            {
+              "id": "iss-eng-101",
+              "identifier": "ENG-101",
+              "title": "Migrate auth to OAuth 2.0 PKCE for onboarding (DEV-42, PR #189)",
+              "state": { "name": "In Review" },
+              "assignee": { "name": "Alice Chen" },
+              "priority": 2,
+              "priorityLabel": "High"
+            },
+            {
+              "id": "iss-eng-102",
+              "identifier": "ENG-102",
+              "title": "Fix flaky CI tests blocking deep link PR #190 (DEV-34)",
+              "state": { "name": "In Progress" },
+              "assignee": { "name": "Eve Zhang" },
+              "priority": 1,
+              "priorityLabel": "Urgent"
+            },
+            {
+              "id": "iss-eng-103",
+              "identifier": "ENG-103",
+              "title": "WebSocket reconnection for onboarding progress sync (DEV-42)",
+              "state": { "name": "In Review" },
+              "assignee": { "name": "Alice Chen" },
+              "priority": 3,
+              "priorityLabel": "Medium"
+            },
+            {
+              "id": "iss-eng-104",
+              "identifier": "ENG-104",
+              "title": "PgBouncer connection pooling for API v2 scale (DEV-50)",
+              "state": { "name": "Done" },
+              "assignee": { "name": "Bob Park" },
+              "priority": 3,
+              "priorityLabel": "Medium"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

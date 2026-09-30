@@ -1,0 +1,18 @@
+{
+  "maxResults": 50,
+  "startAt": 0,
+  "isLast": true,
+  "values": [
+    {
+      "id": 12,
+      "self": "https://acme.atlassian.net/rest/agile/1.0/sprint/12",
+      "state": "active",
+      "name": "Sprint 12",
+      "startDate": "2026-02-24T09:00:00.000Z",
+      "endDate": "2026-03-10T17:00:00.000Z",
+      "activatedDate": "2026-02-24T09:05:00.000Z",
+      "originBoardId": 1,
+      "goal": "Ship onboarding redesign (DEV-42) and deep link fix (DEV-34). API v2 (DEV-50) gated on ADR review. Dark mode (DEV-55) moves to Sprint 13."
+    }
+  ]
+}

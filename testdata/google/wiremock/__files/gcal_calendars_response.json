@@ -1,0 +1,27 @@
+{
+  "kind": "calendar#calendarList",
+  "items": [
+    {
+      "id": "primary",
+      "summary": "Bob Park",
+      "description": "Primary calendar",
+      "timeZone": "America/New_York",
+      "primary": true,
+      "accessRole": "owner"
+    },
+    {
+      "id": "product-team@acme.io",
+      "summary": "Product Team",
+      "description": "Team calendar — sprint ceremonies, reviews, 1:1s",
+      "timeZone": "America/New_York",
+      "accessRole": "writer"
+    },
+    {
+      "id": "engineering@acme.io",
+      "summary": "Engineering",
+      "description": "Eng standups, architecture reviews, oncall",
+      "timeZone": "America/New_York",
+      "accessRole": "reader"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "results": [
+    {
+      "id": "11001",
+      "type": "page",
+      "title": "Onboarding Service — Technical Spec",
+      "version": { "number": 4 },
+      "_links": { "webui": "/spaces/ENG/pages/11001/Onboarding-Service-Technical-Spec" }
+    },
+    {
+      "id": "11002",
+      "type": "page",
+      "title": "API Gateway — Architecture Decision Record",
+      "version": { "number": 2 },
+      "_links": { "webui": "/spaces/ENG/pages/11002/API-Gateway-ADR" }
+    },
+    {
+      "id": "11003",
+      "type": "page",
+      "title": "Sprint 12 — Retro Notes",
+      "version": { "number": 1 },
+      "_links": { "webui": "/spaces/PROD/pages/11003/Sprint-12-Retro" }
+    }
+  ],
+  "start": 0,
+  "limit": 10,
+  "size": 3,
+  "_links": {
+    "base": "https://acme.atlassian.net/wiki",
+    "context": "/wiki"
+  }
+}

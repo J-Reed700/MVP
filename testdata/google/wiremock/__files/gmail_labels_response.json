@@ -1,0 +1,15 @@
+{
+  "labels": [
+    { "id": "INBOX",   "name": "INBOX",   "type": "system" },
+    { "id": "SENT",    "name": "SENT",    "type": "system" },
+    { "id": "DRAFT",   "name": "DRAFT",   "type": "system" },
+    { "id": "UNREAD",  "name": "UNREAD",  "type": "system" },
+    { "id": "STARRED", "name": "STARRED", "type": "system" },
+    { "id": "IMPORTANT", "name": "IMPORTANT", "type": "system" },
+    { "id": "Label_1", "name": "Customer/Acme Corp",    "type": "user" },
+    { "id": "Label_2", "name": "Customer/GlobalRetail", "type": "user" },
+    { "id": "Label_3", "name": "Internal/Product",      "type": "user" },
+    { "id": "Label_4", "name": "Internal/Eng",          "type": "user" },
+    { "id": "Label_5", "name": "Renewals",              "type": "user" }
+  ]
+}
