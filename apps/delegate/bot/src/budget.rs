@@ -11,10 +11,11 @@ pub struct TokenBudget {
 }
 
 impl TokenBudget {
-    pub fn new(db: Db, limit: u64) -> Self {
+    pub fn new(db: Db, limit: Option<u64>) -> Self {
+        let local_limit = limit.unwrap_or(1_000);
         Self {
             db,
-            limit: std::sync::Arc::new(tokio::sync::Mutex::new(limit)),
+            limit: std::sync::Arc::new(tokio::sync::Mutex::new(local_limit)),
         }
     }
 

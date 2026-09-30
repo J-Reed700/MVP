@@ -19,6 +19,7 @@ pub struct ToolContext<'a> {
     pub event: &'a DelegateEvent,
     pub thread_ts: &'a str,
     pub db: &'a Db,
+    pub bootstrap: Option<&'a crate::bootstrap::BootstrapCoordinator>,
 }
 
 // ── Dispatch ───────────────────────────────────────────────────────────
@@ -51,6 +52,7 @@ pub async fn execute_tool(call: &ToolCall, ctx: &ToolContext<'_>) -> String {
         "group_dm" => handle_group_dm(args, ctx).await,
         "connect_integration" => handle_connect_integration(args, ctx).await,
         "integration_status" => handle_integration_status(ctx).await,
+        "complete_onboarding" => handle_complete_onboarding(args, ctx).await,
         other => {
             warn!(tool = %other, "Unknown tool call");
             format!("Unknown tool: {other}")
@@ -214,6 +216,46 @@ fn handle_no_action(args: &Value) -> String {
     let reason = args["reason"].as_str().unwrap_or("no reason given");
     info!(reason = %reason, "Model chose no_action");
     format!("No action taken: {reason}")
+}
+
+async fn handle_complete_onboarding(args: &Value, ctx: &ToolContext<'_>) -> String {
+    let quote = args["confirmation_quote"].as_str().unwrap_or("");
+    let coord = match ctx.bootstrap {
+        Some(c) => c,
+        None => {
+            warn!("complete_onboarding called outside bootstrap context — ignoring");
+            return "complete_onboarding is only valid during bootstrap. No change.".to_string();
+        }
+    };
+
+    let stage = coord.stage().await;
+    if !matches!(stage, crate::bootstrap::BootstrapStage::Validating) {
+        warn!(stage = %stage.as_str(), "complete_onboarding called in wrong stage");
+        return format!(
+            "complete_onboarding only applies during the Validating stage (currently: {}). No change.",
+            stage.as_str()
+        );
+    }
+
+    // Require an explicit confirmation quote — a defense against the model
+    // fabricating confirmation that didn't happen.
+    if quote.trim().is_empty() {
+        return "complete_onboarding requires a confirmation_quote — the team lead's actual words. Not called.".to_string();
+    }
+
+    match coord.mark_complete().await {
+        Ok(()) => {
+            info!(quote = %quote, "Bootstrap completed via complete_onboarding tool");
+            format!(
+                "Bootstrap marked complete. Confirmation quote: \"{}\". Switching to normal operation.",
+                quote.trim()
+            )
+        }
+        Err(e) => {
+            warn!(error = %e, "mark_complete failed");
+            format!("Failed to mark bootstrap complete: {e}")
+        }
+    }
 }
 
 async fn handle_create_skill(args: &Value, ctx: &ToolContext<'_>) -> String {

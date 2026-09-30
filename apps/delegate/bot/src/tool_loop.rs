@@ -49,6 +49,7 @@ pub async fn run_tool_loop(
         event,
         thread_ts,
         db,
+        bootstrap: None,
     };
     let mut conversation: Vec<Value> = vec![
         serde_json::json!({"role": "user", "content": initial_prompt}),
